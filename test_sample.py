@@ -61,6 +61,19 @@ def parse_args():
         default=os.path.expanduser("~/.cache/clip/RN50.pt"),
         help="CLIP RN50 checkpoint for ANN baseline and text tower",
     )
+    parser.add_argument(
+        "--neuron-name",
+        type=str,
+        choices=["IF", "MTH"],
+        default="IF",
+        help="SNN neuron type",
+    )
+    parser.add_argument(
+        "--num-thresholds",
+        type=int,
+        default=1,
+        help="Number of thresholds for MTH neuron",
+    )
     parser.add_argument("--device", type=str, default="cuda:0", help="Torch device")
     return parser.parse_args()
 
@@ -78,6 +91,8 @@ def run_eval(args):
         args.T,
         device,
         clip_checkpoint=args.clip_checkpoint,
+        neuron_name=args.neuron_name,
+        num_thresholds=args.num_thresholds,
     )
     wrapper = wrap_snn_as_clip(
         snn_visual,
@@ -118,6 +133,8 @@ def run_eval(args):
     result = {
         "image": os.path.abspath(args.image),
         "labels": labels,
+        "neuron_name": args.neuron_name,
+        "num_thresholds": args.num_thresholds,
         "ann_probs": probs_ann[0].tolist(),
         "snn_probs": probs_snn[0].tolist(),
         "ann_top1": labels[int(probs_ann[0].argmax())],
