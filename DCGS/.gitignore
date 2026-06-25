@@ -220,5 +220,11 @@ __marimo__/
 # Shell scripts
 *.sh
 
-# data
-data
+
+output/
+datasets/val
+configs/
+!configs/clip/
+
+
+
