@@ -239,6 +239,9 @@ def val_snn_clip(model, test_loader, device, args=None):
     import sys
 
     import clip
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
     import numpy as np
     from PIL import Image
 
@@ -262,20 +265,45 @@ def val_snn_clip(model, test_loader, device, args=None):
     image = preprocess(Image.open(clip_image_path)).unsqueeze(0).to(device)
     text = clip.tokenize(labels).to(device)
 
+    thre_path = getattr(args, 'load_name', 'checkpoint.pth')
+    save_dir = os.path.dirname(os.path.abspath(os.path.expanduser(thre_path)))
+    if not save_dir:
+        save_dir = '.'
+
     with torch.no_grad():
         probs_ann = ann_model(image, text)[0].softmax(dim=-1).cpu().numpy()
         reset(model)
-        probs_snn = wrapper(image, text)[0].softmax(dim=-1).cpu().numpy()
+        img_features = wrapper.encode_image(image)
+        text_features = wrapper.encode_text(text)
+        probs_snn = wrapper.forward(img_features[-1], text_features)[0].softmax(dim=-1).cpu().numpy()
+
+        reset(model)
+        probs_all_t = wrapper.test_probs_at_all_t(image, text)
 
         feat_ann = ann_model.encode_image(image)
-        reset(model)
-        feat_snn = wrapper.encode_image(image)
-        cosine = torch.nn.functional.cosine_similarity(feat_ann, feat_snn).item()
+        feat_snn = img_features[-1]
+        cosine = torch.nn.functional.cosine_similarity(feat_ann, feat_snn, dim=-1).mean().item()
 
         backbone_ann = encode_ann_backbone(ann_model.visual, image)
         reset(model)
         backbone_snn = wrapper.encode_backbone(image)
         cosine_backbone = backbone_cosine(backbone_ann, backbone_snn)
+
+    heatmap = probs_all_t[0]
+    fig, ax = plt.subplots(figsize=(max(4, len(labels) * 1.2), max(4, heatmap.shape[0] * 0.25)))
+    im = ax.imshow(heatmap, aspect='auto', origin='lower', vmin=0.0, vmax=1.0, cmap='viridis')
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha='right')
+    ax.set_yticks(range(heatmap.shape[0]))
+    ax.set_yticklabels([str(t + 1) for t in range(heatmap.shape[0])])
+    ax.set_xlabel('text label')
+    ax.set_ylabel('time step')
+    ax.set_title('SNN probs at each time step')
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    heatmap_path = os.path.join(save_dir, 'snn_probs_heatmap.png')
+    fig.savefig(heatmap_path, dpi=150)
+    plt.close(fig)
 
     print("Labels:", labels)
     print("ANN probs:", probs_ann)
@@ -285,4 +313,5 @@ def val_snn_clip(model, test_loader, device, args=None):
     print("Cosine(backbone_features):", cosine_backbone)
     print("ANN top-1:", labels[int(probs_ann.argmax())])
     print("SNN top-1:", labels[int(probs_snn.argmax())])
+    print("Saved probs heatmap:", heatmap_path)
     return cosine

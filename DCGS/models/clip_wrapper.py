@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -41,10 +42,7 @@ class CLIPWithSNNVisual(nn.Module):
         return next(self.visual.parameters()).dtype
 
     def encode_image(self, image):
-        out = self.visual(image.type(self.dtype))
-        if out.dim() == 3:
-            out = out.mean(dim=0)
-        return out
+        return self.visual(image.type(self.dtype))
 
     def encode_backbone(self, image):
         from forwards.clip_forward import encode_backbone_aggregate
@@ -63,14 +61,22 @@ class CLIPWithSNNVisual(nn.Module):
         x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
         return x
 
-    def forward(self, image, text):
-        image_features = self.encode_image(image)
-        text_features = self.encode_text(text)
-
-        image_features = image_features / image_features.norm(dim=1, keepdim=True)
-        text_features = text_features / text_features.norm(dim=1, keepdim=True)
-
+    def forward(self, img_feat, text_feat):
+        img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
+        text_feat = text_feat / text_feat.norm(dim=-1, keepdim=True)
         logit_scale = self.logit_scale.exp()
-        logits_per_image = logit_scale * image_features @ text_features.t()
+        logits_per_image = logit_scale * img_feat @ text_feat.t()
         logits_per_text = logits_per_image.t()
         return logits_per_image, logits_per_text
+
+    @torch.no_grad()
+    def test_probs_at_all_t(self, image, text):
+        img_features = self.encode_image(image)
+        text_features = self.encode_text(text)
+        T, B, _ = img_features.shape
+        n_labels = text_features.shape[0]
+        probs = np.zeros((B, T, n_labels), dtype=np.float32)
+        for t in range(T):
+            logits_per_image, _ = self.forward(img_features[t], text_features)
+            probs[:, t, :] = logits_per_image.softmax(dim=-1).cpu().numpy()
+        return probs

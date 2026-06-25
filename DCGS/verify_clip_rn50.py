@@ -111,7 +111,9 @@ def main():
     with torch.no_grad():
         probs_ann = ann_model(image, text)[0].softmax(dim=-1).cpu().numpy()
         reset(snn_visual)
-        probs_snn = wrapper(image, text)[0].softmax(dim=-1).cpu().numpy()
+        img_features = wrapper.encode_image(image)
+        text_features = wrapper.encode_text(text)
+        probs_snn = wrapper.forward(img_features[-1], text_features)[0].softmax(dim=-1).cpu().numpy()
 
     print("Labels:", labels)
     print("ANN probs:", probs_ann)
