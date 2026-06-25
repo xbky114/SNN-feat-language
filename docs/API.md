@@ -23,6 +23,32 @@ model = wrap_snn_as_clip(visual, device=device)
 | `clip_checkpoint` | CLIP RN50 权重路径，默认 `~/.cache/clip/RN50.pt` |
 | `device` | 默认取 `snn_visual` 所在设备 |
 
+### `load_converted_snn`
+
+```python
+load_converted_snn(
+    convert_attn: bool,
+    thre_path: str,
+    T: int,
+    device,
+    clip_checkpoint: str = None,
+    neuron_name: str = "IF",
+    num_thresholds: int = 1,
+) -> nn.Module
+```
+
+| 参数 | 说明 |
+|------|------|
+| `convert_attn` | 是否将 attention pool 也转为 SNN |
+| `thre_path` | `get_threshold` 阶段保存的 threshold checkpoint，在/data/home/bky/SNN-feat-language/DCGS/output |
+| `T` | SNN 仿真步数；`forward` 返回 `[T, B, 1024]` |
+| `device` | Torch 设备 |
+| `clip_checkpoint` | CLIP RN50 权重路径 |
+| `neuron_name` | 神经元类型：`"IF"` 或 `"MTH"`，默认 `"IF"` |
+| `num_thresholds` | 多阈值级数，仅 `MTH` 生效，默认 `1` |
+
+固定使用 `coding_type=rate`、`step_mode=m`，不支持其他 coding。
+```
 
 ## 推理前重置
 
