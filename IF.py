@@ -109,6 +109,20 @@ def plot_expected_spike_rate(spike_rate_expectation: np.ndarray, fit_curve: np.n
     plt.savefig('./expected_spike_rate.png')
     plt.close()
 
+def plot_linear_fit(spike_rate_expectation: np.ndarray, fit_curve: np.ndarray = None, abort_before: int = 10):
+    plt.figure(figsize=(10, 6))
+    T = np.arange(abort_before + 1, len(spike_rate_expectation) + 1)
+    inverse_T = 1 / T
+    plt.plot(inverse_T, spike_rate_expectation[abort_before:], color = 'blue', label='real data', linewidth=3)
+    if fit_curve is not None:
+        plt.plot(inverse_T, fit_curve[abort_before:], color = 'red', label='fitted data', alpha = 0.7, linewidth=3)
+    plt.xlabel('inverse T')
+    plt.ylabel('Expected Spike Rate')
+    plt.title('Spike Rate Expectation Over Time')
+    plt.legend()
+    plt.savefig('./linear_fit.png')
+    plt.close()
+
 def fit_spike_rate_expectation(spike_rate_expectation: np.ndarray, abort_before: int = 10):
     # Fit the spike rate expectation to an exponential decay function
     from scipy.optimize import curve_fit
@@ -132,13 +146,14 @@ if __name__ == "__main__":
     dataloader = DataLoader(GaussianData(num_samples=10000, dim=100, mean = 0.0, std = 0.2), batch_size=256, shuffle=True)
     spike_rate_expectation_result = spike_rate_expectation(dataloader, num_neurons=100, threshold=1.0, T=512, device=device)
 
-    abort_before = 10
+    abort_before = 20
     fitted_params, r_squared = fit_spike_rate_expectation(spike_rate_expectation_result, abort_before=abort_before)
-    fitted_data = [None] * abort_before + [fitted_params[1] - fitted_params[0] / (t + 1) for t in range(abort_before, len(spike_rate_expectation_result))]
-    plot_expected_spike_rate(spike_rate_expectation_result, fit_curve=fitted_data)
-
     with open('./fitted_params.txt', 'w') as f:
         f.write(f"A_T = A_\infty - C / T\\\n")
         f.write(f"Fitted parameters: C = {fitted_params[0]}, A_\infty = {fitted_params[1]}\n")
         f.write(f"R^2 = {r_squared}\n")
+
+    fitted_data = [None] * abort_before + [fitted_params[1] - fitted_params[0] / (t + 1) for t in range(abort_before, len(spike_rate_expectation_result))]
+    plot_expected_spike_rate(spike_rate_expectation_result, fit_curve=fitted_data)
+    plot_linear_fit(spike_rate_expectation_result, fit_curve=fitted_data, abort_before=abort_before)
 
