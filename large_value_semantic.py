@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure normalized-feature clipping's effect on coarse-vs-fine CLIP logit margins.
+"""Measure normalized-feature value masking's effect on coarse-vs-fine CLIP logit margins.
 
 The validation directory is expected to have ImageNet's usual layout:
 ``val/n########/image.JPEG``.  A directory name is interpreted as the WordNet
@@ -216,7 +216,8 @@ def render_margin_histogram(output_dir: Path, margin_changes: list[float], title
     axis.hist(margin_array, bins="auto", color="#4477aa", edgecolor="white")
     axis.axvline(0, color="black", linestyle="--", label="zero")
     axis.axvline(mean, color="#cc3311", label=f"mean = {mean:.6g}")
-    axis.set(xlabel=r"$\Delta M=M_{clip}-M_{original}$", ylabel="images", title=title)
+    axis.text(0.98, 0.96, f"P(ΔM < 0) = {probability_negative:.2%}", transform=axis.transAxes, ha="right", va="top")
+    axis.set(xlabel=r"$\Delta M=M_{masked}-M_{original}$", ylabel="images", title=title)
     axis.legend()
     fig.tight_layout()
     fig.savefig(output_dir / "logit_margin_change_histogram.png", dpi=180)
@@ -235,7 +236,7 @@ def render_logit_scatter(output_dir: Path, original_coarse: list[float], origina
     clipped_fine_array = np.asarray(clipped_fine)
     fig, axis = plt.subplots(figsize=(7, 6))
     axis.scatter(original_coarse_array, original_fine_array, s=5, alpha=0.35, color="#4477aa", label="original", rasterized=True)
-    axis.scatter(clipped_coarse_array, clipped_fine_array, s=5, alpha=0.35, color="#cc3311", label="clipped", rasterized=True)
+    axis.scatter(clipped_coarse_array, clipped_fine_array, s=5, alpha=0.35, color="#cc3311", label="masked", rasterized=True)
     all_values = np.concatenate((original_coarse_array, original_fine_array, clipped_coarse_array, clipped_fine_array))
     low, high = (float(all_values.min()), float(all_values.max())) if len(all_values) else (-1.0, 1.0)
     axis.plot([low, high], [low, high], "k--", linewidth=1, label="y=x")
@@ -256,18 +257,22 @@ def evaluate(threshold, model, preprocess, text_by_word, synsets, samples, args)
     original_fine_logits: list[float] = []
     clipped_coarse_logits: list[float] = []
     clipped_fine_logits: list[float] = []
-    print(f"Evaluating normalized-feature clipping (threshold={threshold:.8g}, coarse={args.coarse})...", flush=True)
+    newly_correct_images = 0
+    print(f"Evaluating normalized-feature value masking (threshold={threshold:.8g}, coarse={args.coarse})...", flush=True)
     with torch.inference_mode():
         for raw, batch in image_features(model, preprocess, samples, args.device, args.batch_size, "Clipping evaluation"):
             unit = raw / raw.norm(dim=-1, keepdim=True)
-            # The requested normalized-feature operation does not re-normalize after clipping.
-            altered = torch.clamp(unit, min=-threshold, max=threshold)
+            # Preserve values at or above the threshold and zero smaller magnitudes.
+            # The normalized feature is not re-normalized after this operation.
+            altered = torch.where(unit.abs() < threshold, torch.zeros_like(unit), unit)
             for index, sample in enumerate(batch):
                 candidate_features = coarse_and_fine_features(sample, synsets, text_by_word, args.coarse)
                 original_logits = scores(unit[index], candidate_features, model)
                 if not original_logits[1] > original_logits[0]:
                     continue
                 clipped_logits = scores(altered[index], candidate_features, model)
+                if clipped_logits[1] > clipped_logits[0]:
+                    newly_correct_images += 1
                 original_margin = float((original_logits[1] - original_logits[0]).item())
                 clipped_margin = float((clipped_logits[1] - clipped_logits[0]).item())
                 original_margins.append(original_margin)
@@ -277,11 +282,11 @@ def evaluate(threshold, model, preprocess, text_by_word, synsets, samples, args)
                 original_fine_logits.append(float(original_logits[1].item()))
                 clipped_coarse_logits.append(float(clipped_logits[0].item()))
                 clipped_fine_logits.append(float(clipped_logits[1].item()))
-    print("Saving logit-margin changes and histogram...", flush=True)
+    print("Saving logit-margin changes and figures...", flush=True)
     np.savez_compressed(args.output_dir / "logit_margin_changes.npz", original_margin=original_margins, clipped_margin=clipped_margins, delta_margin=margin_changes, original_l_coarse=original_coarse_logits, original_l_fine=original_fine_logits, clipped_l_coarse=clipped_coarse_logits, clipped_l_fine=clipped_fine_logits)
     metrics = render_margin_histogram(args.output_dir, margin_changes, f"normalized threshold={threshold:.8g}; coarse={args.coarse}")
     render_logit_scatter(args.output_dir, original_coarse_logits, original_fine_logits, clipped_coarse_logits, clipped_fine_logits, f"normalized threshold={threshold:.8g}; coarse={args.coarse}")
-    metrics.update({"threshold": threshold, "percentile": args.percentile, "feature_before_clipping": "normalized", "scoring_after_clipping": "clipped-normalized-feature", "coarse_label": args.coarse})
+    metrics.update({"threshold": threshold, "percentile": args.percentile, "feature_before_masking": "normalized", "operation": "set values with absolute magnitude below threshold to zero", "scoring_after_masking": "masked-normalized-feature", "coarse_label": args.coarse, "new_accuracy": newly_correct_images / len(margin_changes) if margin_changes else float("nan")})
     return metrics
 
 
@@ -290,7 +295,7 @@ def main() -> None:
     parser.add_argument("--wordnet-dir", type=Path, default=Path("~/wordnet").expanduser())
     parser.add_argument("--val-dir", type=Path, default=Path("data/val"))
     parser.add_argument("--clip-dir", type=Path, default=Path(__file__).resolve().parent / "CLIP")
-    parser.add_argument("--output-dir", type=Path, default=Path("verifications/large_value_semantic"))
+    parser.add_argument("--output-dir", type=Path, default=Path("verifications/moderate_value_semantic"))
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--text-batch-size", type=int, default=256)
