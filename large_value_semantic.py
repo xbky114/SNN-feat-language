@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test whether clipping large RN50 CLIP image-feature values shifts predictions coarseward.
+"""Measure normalized-feature clipping's effect on coarse-vs-fine CLIP logit margins.
 
 The validation directory is expected to have ImageNet's usual layout:
 ``val/n########/image.JPEG``.  A directory name is interpreted as the WordNet
@@ -139,10 +139,9 @@ def calculate_threshold(model, preprocess, text_by_word, synsets, samples: list[
         unit = raw / raw.norm(dim=-1, keepdim=True)
         correct_indices = []
         for index, sample in enumerate(batch):
-            texts = [synsets[offset].words[0] for offset in sample.path]
-            text_features = [text_by_word[text] for text in texts]
-            baseline = torch.softmax(scores(unit[index], text_features, model), dim=0)
-            if int(baseline.argmax()) == len(sample.path) - 1:
+            candidate_features = coarse_and_fine_features(sample, synsets, text_by_word, args.coarse)
+            candidate_logits = scores(unit[index], candidate_features, model)
+            if candidate_logits[1] > candidate_logits[0]:
                 correct_indices.append(index)
         if not correct_indices:
             continue
@@ -155,7 +154,7 @@ def calculate_threshold(model, preprocess, text_by_word, synsets, samples: list[
         position = end
         correct_images += len(correct_indices)
     if normalized_values is None:
-        raise ValueError("No images were originally classified with yn as the highest-scoring path text")
+        raise ValueError("No images had l_fine > l_coarse in the two-text candidate set")
     normalized_values.flush()
     print(f"Computing exact normalized-feature {args.percentile:g}th percentile...", flush=True)
     threshold = float(np.percentile(normalized_values[:position], args.percentile))
@@ -165,7 +164,7 @@ def calculate_threshold(model, preprocess, text_by_word, synsets, samples: list[
     (args.output_dir / ".absolute_normalized_image_features.tmp.npy").unlink()
     print(f"Threshold ready: normalized={threshold:.8g}", flush=True)
     accuracy = correct_images / len(samples)
-    print(f"Original path-label accuracy: {correct_images}/{len(samples)} ({accuracy:.6%})", flush=True)
+    print(f"Original two-text accuracy (l_fine > l_coarse): {correct_images}/{len(samples)} ({accuracy:.6%})", flush=True)
     return threshold, {"total_images": len(samples), "correct_images": correct_images, "accuracy": accuracy}
 
 
@@ -173,7 +172,12 @@ def encode_texts(model, clip_module, synsets: dict[str, Synset], samples: list[S
     import torch
 
     # First data.noun lemma verbatim: no article, template, or other prompt wrapper.
-    texts = sorted({synsets[offset].words[0] for sample in samples for offset in sample.path})
+    offsets = {
+        offset
+        for sample in samples
+        for offset in (sample.path[0] if args.coarse == "root" else sample.path[len(sample.path) // 2], sample.path[-1])
+    }
+    texts = sorted(synsets[offset].words[0] for offset in offsets)
     print(f"Encoding {len(texts)} unique WordNet texts with RN50...", flush=True)
     encoded: list[torch.Tensor] = []
     with torch.inference_mode():
@@ -191,42 +195,67 @@ def scores(image_feature, text_features, model):
     return model.logit_scale.exp().float() * image_feature @ matrix.T
 
 
-def render(mode_dir: Path, coarse: list[float], fine: list[float], shifts: list[float], title: str) -> dict[str, float | int]:
+def coarse_and_fine_features(sample: Sample, synsets: dict[str, Synset], text_by_word, coarse: str):
+    """Return the two and only two candidate text features: y_coarse and y_fine."""
+    coarse_offset = sample.path[0] if coarse == "root" else sample.path[len(sample.path) // 2]
+    fine_offset = sample.path[-1]
+    coarse_text = synsets[coarse_offset].words[0]
+    fine_text = synsets[fine_offset].words[0]
+    return [text_by_word[coarse_text], text_by_word[fine_text]]
+
+
+def render_margin_histogram(output_dir: Path, margin_changes: list[float], title: str) -> dict[str, float | int]:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    coarse_array, fine_array, shift_array = map(np.asarray, (coarse, fine, shifts))
-    mean = float(shift_array.mean()) if len(shift_array) else float("nan")
-    probability = float((shift_array > 0).mean()) if len(shift_array) else float("nan")
-    fig, axis = plt.subplots(figsize=(7, 6))
-    axis.scatter(fine_array, coarse_array, s=5, alpha=0.35, rasterized=True)
-    limits = np.array([fine_array.min(), fine_array.max(), coarse_array.min(), coarse_array.max()]) if len(shifts) else np.array([-1, 1])
-    low, high = float(limits.min()), float(limits.max())
-    axis.plot([low, high], [low, high], "k--", linewidth=1, label="y=x")
-    axis.set(xlabel=r"$\Delta P_{fine}$", ylabel=r"$\Delta P_{coarse}$", title=title)
-    axis.legend()
-    fig.tight_layout()
-    fig.savefig(mode_dir / "coarse_vs_fine_scatter.png", dpi=180)
-    plt.close(fig)
+    margin_array = np.asarray(margin_changes)
+    mean = float(margin_array.mean()) if len(margin_array) else float("nan")
+    probability_negative = float((margin_array < 0).mean()) if len(margin_array) else float("nan")
     fig, axis = plt.subplots(figsize=(7, 5))
-    axis.hist(shift_array, bins="auto", color="#4477aa", edgecolor="white")
+    axis.hist(margin_array, bins="auto", color="#4477aa", edgecolor="white")
     axis.axvline(0, color="black", linestyle="--", label="zero")
     axis.axvline(mean, color="#cc3311", label=f"mean = {mean:.6g}")
-    axis.set(xlabel=r"$S=\Delta P_{coarse}-\Delta P_{fine}$", ylabel="images", title=title)
+    axis.set(xlabel=r"$\Delta M=M_{clip}-M_{original}$", ylabel="images", title=title)
     axis.legend()
     fig.tight_layout()
-    fig.savefig(mode_dir / "semantic_shift_histogram.png", dpi=180)
+    fig.savefig(output_dir / "logit_margin_change_histogram.png", dpi=180)
     plt.close(fig)
-    return {"correct_images": len(shifts), "mean_S_coarse": mean, "P_S_coarse_gt_0": probability}
+    return {"correct_images": len(margin_changes), "mean_delta_margin": mean, "P_delta_margin_lt_0": probability_negative}
+
+
+def render_logit_scatter(output_dir: Path, original_coarse: list[float], original_fine: list[float], clipped_coarse: list[float], clipped_fine: list[float], title: str) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    original_coarse_array = np.asarray(original_coarse)
+    original_fine_array = np.asarray(original_fine)
+    clipped_coarse_array = np.asarray(clipped_coarse)
+    clipped_fine_array = np.asarray(clipped_fine)
+    fig, axis = plt.subplots(figsize=(7, 6))
+    axis.scatter(original_coarse_array, original_fine_array, s=5, alpha=0.35, color="#4477aa", label="original", rasterized=True)
+    axis.scatter(clipped_coarse_array, clipped_fine_array, s=5, alpha=0.35, color="#cc3311", label="clipped", rasterized=True)
+    all_values = np.concatenate((original_coarse_array, original_fine_array, clipped_coarse_array, clipped_fine_array))
+    low, high = (float(all_values.min()), float(all_values.max())) if len(all_values) else (-1.0, 1.0)
+    axis.plot([low, high], [low, high], "k--", linewidth=1, label="y=x")
+    axis.set(xlabel=r"$l_{coarse}$", ylabel=r"$l_{fine}$", title=title)
+    axis.legend()
+    fig.tight_layout()
+    fig.savefig(output_dir / "coarse_vs_fine_logits_scatter.png", dpi=180)
+    plt.close(fig)
 
 
 def evaluate(threshold, model, preprocess, text_by_word, synsets, samples, args):
     import torch
 
-    coarse_changes: list[float] = []
-    fine_changes: list[float] = []
-    shifts: list[float] = []
+    original_margins: list[float] = []
+    clipped_margins: list[float] = []
+    margin_changes: list[float] = []
+    original_coarse_logits: list[float] = []
+    original_fine_logits: list[float] = []
+    clipped_coarse_logits: list[float] = []
+    clipped_fine_logits: list[float] = []
     print(f"Evaluating normalized-feature clipping (threshold={threshold:.8g}, coarse={args.coarse})...", flush=True)
     with torch.inference_mode():
         for raw, batch in image_features(model, preprocess, samples, args.device, args.batch_size, "Clipping evaluation"):
@@ -234,21 +263,24 @@ def evaluate(threshold, model, preprocess, text_by_word, synsets, samples, args)
             # The requested normalized-feature operation does not re-normalize after clipping.
             altered = torch.clamp(unit, min=-threshold, max=threshold)
             for index, sample in enumerate(batch):
-                texts = [synsets[offset].words[0] for offset in sample.path]
-                text_features = [text_by_word[text] for text in texts]
-                baseline = torch.softmax(scores(unit[index], text_features, model), dim=0)
-                if int(baseline.argmax()) != len(sample.path) - 1:
+                candidate_features = coarse_and_fine_features(sample, synsets, text_by_word, args.coarse)
+                original_logits = scores(unit[index], candidate_features, model)
+                if not original_logits[1] > original_logits[0]:
                     continue
-                changed = torch.softmax(scores(altered[index], text_features, model), dim=0)
-                coarse_index = 0 if args.coarse == "root" else len(sample.path) // 2
-                coarse_delta = float((changed[coarse_index] - baseline[coarse_index]).item())
-                fine_delta = float((changed[-1] - baseline[-1]).item())
-                coarse_changes.append(coarse_delta)
-                fine_changes.append(fine_delta)
-                shifts.append(coarse_delta - fine_delta)
-    print("Saving probability changes and figures...", flush=True)
-    np.savez_compressed(args.output_dir / "probability_changes.npz", delta_p_coarse=coarse_changes, delta_p_fine=fine_changes, semantic_shift=shifts)
-    metrics = render(args.output_dir, coarse_changes, fine_changes, shifts, f"normalized threshold={threshold:.8g}; coarse={args.coarse}")
+                clipped_logits = scores(altered[index], candidate_features, model)
+                original_margin = float((original_logits[1] - original_logits[0]).item())
+                clipped_margin = float((clipped_logits[1] - clipped_logits[0]).item())
+                original_margins.append(original_margin)
+                clipped_margins.append(clipped_margin)
+                margin_changes.append(clipped_margin - original_margin)
+                original_coarse_logits.append(float(original_logits[0].item()))
+                original_fine_logits.append(float(original_logits[1].item()))
+                clipped_coarse_logits.append(float(clipped_logits[0].item()))
+                clipped_fine_logits.append(float(clipped_logits[1].item()))
+    print("Saving logit-margin changes and histogram...", flush=True)
+    np.savez_compressed(args.output_dir / "logit_margin_changes.npz", original_margin=original_margins, clipped_margin=clipped_margins, delta_margin=margin_changes, original_l_coarse=original_coarse_logits, original_l_fine=original_fine_logits, clipped_l_coarse=clipped_coarse_logits, clipped_l_fine=clipped_fine_logits)
+    metrics = render_margin_histogram(args.output_dir, margin_changes, f"normalized threshold={threshold:.8g}; coarse={args.coarse}")
+    render_logit_scatter(args.output_dir, original_coarse_logits, original_fine_logits, clipped_coarse_logits, clipped_fine_logits, f"normalized threshold={threshold:.8g}; coarse={args.coarse}")
     metrics.update({"threshold": threshold, "percentile": args.percentile, "feature_before_clipping": "normalized", "scoring_after_clipping": "clipped-normalized-feature", "coarse_label": args.coarse})
     return metrics
 
@@ -279,10 +311,10 @@ def main() -> None:
     text_by_word = encode_texts(model, clip_module, synsets, samples, args)
     threshold, accuracy = calculate_threshold(model, preprocess, text_by_word, synsets, samples, args)
     metrics = evaluate(threshold, model, preprocess, text_by_word, synsets, samples, args)
-    report = {"configuration": {"clip_model": "RN50", "device": args.device, "images": len(samples), "root_excluded": root, "node_text": "first data.noun lemma verbatim", "coarse_label": args.coarse}, "original_path_label_accuracy": accuracy, "normalized_feature_threshold": metrics}
+    report = {"configuration": {"clip_model": "RN50", "device": args.device, "images": len(samples), "root_excluded": root, "node_text": "first data.noun lemma verbatim", "coarse_label": args.coarse, "candidate_set": "{y_coarse, y_fine}"}, "original_two_text_accuracy": accuracy, "normalized_feature_threshold": metrics}
     (args.output_dir / "summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"Saved complete report to {args.output_dir / 'summary.json'}", flush=True)
-    print(f"normalized: threshold={metrics['threshold']:.8g}, E[S_coarse]={metrics['mean_S_coarse']:.8g}, P(S_coarse>0)={metrics['P_S_coarse_gt_0']:.6%}, correct={metrics['correct_images']}")
+    print(f"normalized: threshold={metrics['threshold']:.8g}, E[delta_M]={metrics['mean_delta_margin']:.8g}, P(delta_M<0)={metrics['P_delta_margin_lt_0']:.6%}, correct={metrics['correct_images']}")
 
 
 if __name__ == "__main__":
