@@ -27,8 +27,8 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default=None,
-        help="Directory to save JSON and plots (default: <data-root>/statics).",
+        default="results/CLIP/auxilary_2000/statics",
+        help="Directory to save JSON and plots.",
     )
     parser.add_argument(
         "--num-bins",
@@ -65,10 +65,17 @@ def load_sample_metrics(sample_dir):
         data = json.load(f)
     probs = np.asarray(data["snn_all_t"]["probs"], dtype=np.float64)
     logits = np.asarray(data["snn_all_t"]["logits"], dtype=np.float64)
+    cosine = np.asarray(data["snn_all_t"].get("cosine", logits), dtype=np.float64)
+    ann = data.get("ann")
+    ann_logits = None
+    if ann is not None:
+        ann_values = ann.get("logits", ann.get("probs"))
+        if ann_values is not None:
+            ann_logits = np.asarray(ann_values, dtype=np.float64).reshape(-1)
     labels = data["labels"]
-    if probs.ndim != 2 or logits.ndim != 2:
+    if probs.ndim != 2 or logits.ndim != 2 or cosine.ndim != 2:
         raise ValueError(f"Expected 2D time series in {json_path}")
-    if probs.shape != logits.shape:
+    if probs.shape != logits.shape or cosine.shape != logits.shape:
         raise ValueError(f"probs/logits shape mismatch in {json_path}")
     if probs.shape[1] != len(labels):
         raise ValueError(f"Label count mismatch in {json_path}")
@@ -77,8 +84,10 @@ def load_sample_metrics(sample_dir):
         "labels": labels,
         "probs": probs,
         "logits": logits,
+        "cosine": cosine,
         "T": probs.shape[0],
         "n": probs.shape[1],
+        "ann_logits": ann_logits,
     }
 
 
@@ -136,19 +145,40 @@ def plot_scatter(x, y, xlabel, ylabel, title, save_path):
     plt.close(fig)
 
 
+def plot_histogram(values, xlabel, title, save_path):
+    """Plot logits in the requested [-1, 1] range."""
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    # Keep every sample visible while restricting the displayed domain.
+    values = np.clip(values, -1.0, 1.0)
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.hist(values, bins=40, range=(-1, 1), alpha=0.85, edgecolor="black")
+    ax.set_xlim(-1, 1)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("count")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+
 def main():
     args = parse_args()
     data_root = os.path.abspath(args.data_root)
-    output_dir = (
-        os.path.abspath(args.output_dir)
-        if args.output_dir
-        else os.path.join(data_root, "statics")
-    )
+    output_dir = os.path.abspath(args.output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     expected_depths = []
     logit_bins = [[] for _ in range(args.num_bins + 1)]
     prob_bins = [[] for _ in range(args.num_bins + 1)]
+    first_bin_top1 = 0
+    first_bin_top2 = 0
+    last_bin_top1 = 0
+    first_bin_logits = []
+    last_bin_logits = []
+    ann_top1 = 0
+    ann_count = 0
     num_samples = 0
     skipped = 0
 
@@ -161,8 +191,35 @@ def main():
         num_samples += 1
         probs = sample["probs"]
         logits = sample["logits"]
+        cosine = sample["cosine"]
         n = sample["n"]
         expected_depths.append(expected_depth_sequence(probs))
+
+        # At t=1, aggregate scores within each depth bin and assess whether
+        # the highest-scoring bin is the first (or one of the first two).
+        # Compute the mean score per depth bin (bins without labels are ignored).
+        sums = np.zeros(args.num_bins, dtype=np.float64)
+        counts = np.zeros(args.num_bins, dtype=np.int64)
+        for k in range(n):
+            b = depth_bin_index(k, n, args.num_bins) - 1
+            sums[b] += logits[0, k]
+            counts[b] += 1
+        means = np.divide(sums, counts, out=np.full_like(sums, -np.inf), where=counts > 0)
+        ranked = int(np.argmax(means))
+        first_bin_top1 += ranked == 0
+        first_bin_top2 += ranked in (0, 1)
+        first_bin_logits.extend(cosine[0, [k for k in range(n) if depth_bin_index(k, n, args.num_bins) == 1]])
+
+        # At the final time step, classification is correct when the highest
+        # scoring label is y_n (the final label), and collect its logit.
+        last_bin_top1 += int(int(np.argmax(logits[-1])) == n - 1)
+        last_bin_logits.append(float(cosine[-1, -1]))
+
+        # ANN baseline (when present): top-scoring label must also be y_n.
+        ann_logits = sample.get("ann_logits")
+        if ann_logits is not None and ann_logits.size >= n:
+            ann_count += 1
+            ann_top1 += int(int(np.argmax(ann_logits[:n])) == n - 1)
 
         for k in range(n):
             bin_idx = depth_bin_index(k, n, args.num_bins)
@@ -209,6 +266,15 @@ def main():
 
     logit_com = aggregate_com_bins(logit_bins)
     prob_com = aggregate_com_bins(prob_bins)
+    snn_accuracy = {
+        "t1_highest_mean_bin_is_first": first_bin_top1 / num_samples,
+        "t1_highest_mean_bin_is_first_or_second": first_bin_top2 / num_samples,
+        "t_last_snn_top1_is_yn": last_bin_top1 / num_samples,
+    }
+    ann_accuracy = {
+        "top1_is_yn": (ann_top1 / ann_count) if ann_count else None,
+        "num_samples": ann_count,
+    }
 
     result = {
         "data_root": data_root,
@@ -220,11 +286,17 @@ def main():
         "metrics": {
             "mean_level_correlation": {
                 **mean_level_corr,
-                "time_steps": time_steps.tolist(),
+                "time_steps": int(expected_depths.shape[1]),
                 "mean_expected_depth": mean_expected_depth.tolist(),
             },
             "temporal_logits_com": logit_com,
             "temporal_prob_com": prob_com,
+            "SNN_accuracy": snn_accuracy,
+            "ann_accuracy": ann_accuracy,
+            "histogram_counts": {
+                "t1_first_bin_logits": len(first_bin_logits),
+                "tlast_yn_logits": len(last_bin_logits),
+            },
         },
     }
 
@@ -255,6 +327,18 @@ def main():
         ylabel=r"$\bar{T}_m$",
         title=f"Temporal Prob COM (r={prob_com['spearman_r']:.4f})",
         save_path=os.path.join(output_dir, "temporal_prob_com_scatter.png"),
+    )
+    plot_histogram(
+        first_bin_logits,
+        xlabel="cosine similarity (t=1, first depth bin)",
+        title="Cosine Similarity Distribution: First Depth Bin at t=1",
+        save_path=os.path.join(output_dir, "t1_first_bin_logits_histogram.png"),
+    )
+    plot_histogram(
+        last_bin_logits,
+        xlabel="cosine similarity (t=T, y_n)",
+        title="Cosine Similarity Distribution: y_n at t=T",
+        save_path=os.path.join(output_dir, "tlast_yn_logits_histogram.png"),
     )
 
     print(f"Samples processed: {num_samples} (skipped: {skipped})")
