@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--data',type=Path,default=Path('./data/auxiliary_2000')); p.add_argument('--output-dir',type=Path,default=Path('./results/verifications/t1_frequency_ablation')); p.add_argument('--clip-dir',type=Path,default=Path(__file__).parent/'CLIP'); p.add_argument('--device',default='cuda:0'); p.add_argument('--batch-size',type=int,default=64); p.add_argument('--num-workers',type=int,default=4); p.add_argument('--max-images',type=int,default=None); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--data',type=Path,default=Path('./data/auxiliary_2000')); p.add_argument('--output-dir',type=Path,default=Path('./results/verifications/t1_feature_frequency_ablation')); p.add_argument('--clip-dir',type=Path,default=Path(__file__).parent/'CLIP'); p.add_argument('--device',default='cuda:0'); p.add_argument('--batch-size',type=int,default=64); p.add_argument('--num-workers',type=int,default=4); p.add_argument('--max-images',type=int,default=None); a=p.parse_args()
     sys.path.insert(0,str(a.clip_dir)); import clip
     model, preprocess=clip.load('RN50',device=a.device,jit=False); model.eval(); v=model.visual
     files=sorted([x for x in a.data.rglob('*') if x.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.webp'}])
@@ -24,16 +24,16 @@ def main():
     with torch.inference_mode():
         for x in loader: vals.append(feat(x.to(a.device, non_blocking=True)).float().cpu())
     hs=torch.cat(vals); vth=torch.quantile(hs.permute(1,0,2,3).reshape(hs.shape[1],-1),0.99,dim=1)
-    H,W=hs.shape[-2:]; yy,xx=np.meshgrid(np.fft.fftfreq(H),np.fft.fftfreq(W),indexing='ij'); order=np.argsort((yy*yy+xx*xx).ravel()); dc={0}; lsf=set(order[1:25]); hsf=set(order[25:]); masks={'DC':dc,'LSF':lsf,'HSF':hsf}; deltas={k:[] for k in masks}
+    H,W=hs.shape[-2:]; yy,xx=np.meshgrid(np.fft.fftshift(np.fft.fftfreq(H)),np.fft.fftshift(np.fft.fftfreq(W)),indexing='ij'); D2=yy*yy+xx*xx; sigmas=[.10,.20,.30,.40,.50]; deltas={f'sigma_{s:.2f}':[] for s in sigmas}
     for h in hs:
         base=torch.relu(h); spike=(h>=vth[:,None,None]).float(); denom=spike.sum().item()
         if denom==0: continue
-        arr=np.fft.fft2(h.numpy(),axes=(-2,-1))
-        for name,idxs in masks.items():
-            f=arr.copy(); flat=f.reshape(f.shape[0],-1); flat[:,list(idxs)]=0; hf=torch.from_numpy(np.fft.ifft2(f.reshape(f.shape[0],H,W),axes=(-2,-1)).real).float(); sf=(hf>=vth[:,None,None]).float(); deltas[name].append(float((spike-sf).sum()/denom))
+        # Center the spectrum and apply Gaussian frequency attenuation.
+        arr=np.fft.fftshift(np.fft.fft2(h.numpy(),axes=(-2,-1)),axes=(-2,-1))
+        for s in sigmas:
+            f=arr*np.exp(-D2/(2*s*s)); hf=torch.from_numpy(np.fft.ifft2(np.fft.ifftshift(f,axes=(-2,-1)),axes=(-2,-1)).real).float(); sf=(hf>=vth[:,None,None]).float(); deltas[f'sigma_{s:.2f}'].append(float((spike-sf).abs().sum()/denom))
     out=a.output_dir; out.mkdir(parents=True,exist_ok=True); means={k:float(np.mean(x)) for k,x in deltas.items()}; json.dump({'mean_delta':means,'num_images':len(files),'threshold_percentile':99},open(out/'results.json','w'),indent=2)
     import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
-    fig,ax=plt.subplots(1,3,figsize=(12,3));
-    for q,(k,x) in zip(ax,deltas.items()): q.hist(x,bins='auto'); q.set_title(k); q.set_xlabel('delta'); q.set_ylabel('count')
+    means=[np.mean(x) for x in deltas.values()]; stds=[np.std(x) for x in deltas.values()]; fig,ax=plt.subplots(figsize=(7,5)); ax.bar(list(deltas),means,yerr=stds,capsize=4); ax.set_ylabel('delta (mean +/- std)'); ax.set_xlabel('Gaussian sigma');
     fig.tight_layout(); fig.savefig(out/'delta_histograms.png',dpi=180)
 if __name__=='__main__': main()
