@@ -21,14 +21,12 @@ class SNNArtifact(nn.Module):
                 m.reset_state()
 
     def save(self, path):
-        torch.save(self, Path(path))
+        torch.save(self._checkpoint(), Path(path))
 
     @classmethod
     def load(cls, path, map_location='cpu'):
-        obj = torch.load(Path(path), map_location=map_location, weights_only=False)
-        if not isinstance(obj, cls):
-            raise TypeError(f'expected {cls.__name__}, got {type(obj).__name__}')
-        return obj
+        from .DCGS.converter import VisualSNNArtifact
+        return VisualSNNArtifact.load(path, map_location=map_location)
 
     def _checkpoint(self):
         return {'class': type(self).__module__ + '.' + type(self).__qualname__, 'state_dict': self.state_dict()}
