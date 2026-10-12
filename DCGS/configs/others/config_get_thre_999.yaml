@@ -1,0 +1,41 @@
+# Model configuration
+model_name: resnet18            # Model class name
+load_name: "../models/qe-conversion/resnet18/resnet18_imagenet.pth"
+# load_name: "checkpoint.pth"
+# model_name: resnet34            # Model class name
+# load_name: "../models/qe-conversion/resnet34/resnet34_imagenet.pth"
+# model_name: vgg16_bn
+# load_name: "../models/qe-conversion/vgg16/vgg16_bn_imagenet.pth"
+
+# mode: test_ann
+mode: get_threshold                  # Operation mode: test_ann, get_threshold, test_snn, train_snn
+save_name: ./output/threshold_resnet18_999           # Name for saving the model
+
+# Threshold configuration
+threshold_mode: "99.9%"         # Threshold mode for SNN neurons
+# threshold_mode: "var"         # Threshold mode for SNN neurons
+fx: False
+
+# Neuron configuration
+neuron_name: IF                 # Neuron model: IF, IF_with_neg, LIF, MTH
+coding_type: rate               # Coding type: rate or diff
+
+# Task configuration
+task: classification            # Task type: classification or others
+
+# Dataset configuration
+dataset: imagenet               # Dataset name
+dataset_path: "../data"         # Path to the dataset
+batchsize: 50                  # Batch size for training or testing
+
+# Device configuration
+device: "0"                     # CUDA device ID (e.g., 0 for single GPU)
+distributed: false              # Enable distributed training (true or false)
+
+# Logger configuration
+logger: false                    # Enable logging
+logger_path: "logs/log.txt"     # Path to save logs
+
+# Training and Testing configuration
+seed: 2024                      # Random seed for reproducibility
+time: 1                         # SNN simulation time (0 for default behavior)

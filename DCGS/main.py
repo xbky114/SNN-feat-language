@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from utils import seed_all, get_logger, get_modules
-from utils.clip_weights import extract_visual_state_dict, load_clip_state_dict
 from datasets import datapool
 from models import modelpool
 from train_val_functions import valpool
@@ -36,10 +35,9 @@ def get_args():
     parser.add_argument('--step_mode', choices=['s', 'm'], default='s', type=str, help='Step_mode')
     parser.add_argument('--coding_type', '-coding', choices=['rate', 'leaky_rate', 'diff_rate', 'diff_leaky_rate'], default='rate', type=str, help='Coding type')
     parser.add_argument('--fuse', action='store_true', help="Whether to fuse")
-    parser.add_argument('--convert_attn', action='store_true', help="Convert CLIP attention pool to SNN")
     
     # Task configuration
-    parser.add_argument('--task', choices=['classification','object_detection','clip'], default='classification', type=str, help='Task type')
+    parser.add_argument('--task', choices=['classification','object_detection'], default='classification', type=str, help='Task type')
     
     # Dataset configuration
     parser.add_argument('--dataset', '-data', default='cifar10', type=str, help='Dataset name')
@@ -86,36 +84,15 @@ def get_args():
 
     return args, device
 
-def load_model_from_dict(model, model_path, device, model_name=None):
-    model_path = os.path.expanduser(model_path)
-    if model_name == 'clip_rn50' and model_path.endswith('.pt'):
-        state_dict = extract_visual_state_dict(model_path)
-        model.load_state_dict(state_dict)
-        model.to(device)
-        model.float()
-        return model
-
-    try:
-        state_dict = load_clip_state_dict(model_path)
-    except Exception:
-        state_dict = torch.load(model_path, map_location=torch.device('cpu'))
-        for model_key in ['model', 'module']:
-            if isinstance(state_dict, dict) and model_key in state_dict:
-                state_dict = state_dict[model_key]
-                print("Load state_dict by model_key = %s" % model_key)
-                break
-
-    if model_name == 'clip_rn50' and any(key.startswith('visual.') for key in state_dict.keys()):
-        state_dict = {
-            key[len('visual.'):]: value.float()
-            for key, value in state_dict.items()
-            if key.startswith('visual.')
-        }
-
-    strict = True
-    if model_name == 'clip_rn50' and model_path.endswith('.pth'):
-        strict = getattr(model, 'convert_attn', False)
-    model.load_state_dict(state_dict, strict=strict)
+def load_model_from_dict(model, model_path, device):
+    state_dict = torch.load(os.path.join(model_path), map_location=torch.device('cpu'))
+    for model_key in ['model','module']:
+        if model_key in state_dict:
+            state_dict = state_dict[model_key]
+            print("Load state_dict by model_key = %s" % model_key)
+            break
+    
+    model.load_state_dict(state_dict)
     model.to(device)
     return model
 
@@ -135,7 +112,7 @@ def main():
     # Perform training or testing based on args.mode
     if args.mode == 'test_ann':
         print("Test ANN Mode")
-        model = load_model_from_dict(model, args.load_name, device, model_name=args.model_name)
+        model = load_model_from_dict(model, args.load_name, device)
         print(model)
         print("Successfully load ann state dict")
         model.to(device)
@@ -145,44 +122,20 @@ def main():
         val(model, test_loader, device, args)
     elif args.mode == 'get_threshold':
         print("Get Threshold for SNN Neuron Mode")
-        model = load_model_from_dict(model, args.load_name, device, model_name=args.model_name)
+        model = load_model_from_dict(model, args.load_name, device)#加载模型
         model.to(device)
         model.eval()
         model = Converter.change_maxpool_before_relu(model)
-        model_converter = Threshold_Getter(
-            dataloader=test_loader,
-            mode=args.threshold_mode,
-            level=args.threshold_level,
-            device=device,
-            momentum=0.1,
-            output_fx=args.fx,
-            convert_attn=getattr(args, 'convert_attn', False),
-        )#替换模块
+        model_converter = Threshold_Getter(dataloader=test_loader, mode=args.threshold_mode, level=args.threshold_level, device=device, momentum=0.1, output_fx=args.fx)#替换模块
         model_with_threshold = model_converter(model)#计算阈值
         Threshold_Getter.save_model(model=model_with_threshold, model_path=args.save_name, mode_fx=args.fx)# 保存模型/模型状态字典
         print("Successfully Save Model with Threshold")
     elif args.mode == 'test_snn':# 暂时不支持输入fx
         print("Test SNN Mode")
-        model.convert_attn = getattr(args, 'convert_attn', False)
         model = Converter.change_maxpool_before_relu(model)
         model = Converter.replace_by_maxpool_neuron(model,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
-        model = Threshold_Getter.replace_nonlinear_by_hook(
-            model=model,
-            momentum=0.1,
-            mode=args.threshold_mode,
-            level=args.threshold_level,
-            convert_attn=getattr(args, 'convert_attn', False),
-        )
-        model = load_model_from_dict(model, args.load_name, device, model_name=args.model_name)
-        if args.model_name == 'clip_rn50' and not getattr(args, 'convert_attn', False):
-            clip_path = getattr(args, 'clip_checkpoint', None) or os.path.expanduser('~/.cache/clip/RN50.pt')
-            if os.path.exists(os.path.expanduser(clip_path)):
-                attnpool_state = {
-                    key: value.float()
-                    for key, value in extract_visual_state_dict(clip_path).items()
-                    if key.startswith('attnpool.')
-                }
-                model.load_state_dict(attnpool_state, strict=False)
+        model = Threshold_Getter.replace_nonlinear_by_hook(model=model, momentum=0.1, mode=args.threshold_mode, level=args.threshold_level)
+        model = load_model_from_dict(model, args.load_name, device)
         if args.threshold_mode=="var":
             if args.neuron_name.startswith('MTH'):
                 model = Threshold_Getter.get_scale_from_var(model, T=args.time*(2**args.num_thresholds))

@@ -1,18 +1,11 @@
+from .ResNet import *
+from .VGG import *
+from .ViT import *
+from .Eva import *
+from .det_models import *
+
 def modelpool(args):
-    if args.task == 'clip':
-        from .ClipModifiedResNet import clip_rn50
-        if args.model_name == 'clip_rn50':
-            return clip_rn50()
-        print("still not support this model")
-        exit(0)
-    elif args.task == 'classification':
-        from .ResNet import resnet18, resnet20, resnet34
-        from .VGG import vgg16, vgg16_wobn, vgg19
-        from .ViT import vit_small_patch16_224, vit_base_patch16_224, vit_large_patch16_224
-        from .Eva import (
-            eva02_tiny_patch14_336, eva02_small_patch14_336,
-            eva02_base_patch14_448, eva02_large_patch14_448,
-        )
+    if args.task == 'classification':
         if args.dataset == 'imagenet':
             num_classes = 1000
         elif args.dataset == 'cifar100':
@@ -56,7 +49,6 @@ def modelpool(args):
             print("still not support this model")
             exit(0)
     elif args.task == 'object_detection':
-        from .det_models import fcos_resnet50_fpn, retinanet_resnet50_fpn, retinanet_resnet50_fpn_v2
         if args.dataset == 'coco':
             num_classes = 91
         else:
@@ -70,3 +62,4 @@ def modelpool(args):
     else:
         print("still not support this task")
         exit(0)
+        

@@ -1,20 +1,12 @@
 from .encoder import *
 from .decoder import *
-from .clip_forward import forward_replace_clip
 import types
 from utils import *
 import torch
 import copy
 import numpy as np
 def forward_replace(args,model):
-    if args.task == 'clip':
-        if args.mode == 'test_ann':
-            return model
-        elif args.mode == 'get_threshold':
-            return model
-        elif args.mode == 'test_snn':
-            return forward_replace_clip(args, model)
-    elif args.task == 'classification':
+    if args.task == 'classification':
         if args.mode == 'test_ann':
             return model
         elif args.mode == 'get_threshold':
