@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import torch
+from tqdm.auto import tqdm
 from dataloader import imagenet_dataloaders, resolve_class_names
 from eval_ann import class_text_features
 from to_snn.prototype import SNNArtifact
@@ -12,6 +13,8 @@ def evaluate_snn(model, pool, artifact, loader, class_names, timesteps=128, devi
     model.eval().to(device); pool.eval().to(device); artifact.eval().to(device)
     text_features = class_text_features(model, class_names, device)
     correct = total = 0
+    progress = tqdm(total=len(loader.dataset), unit="img", unit_scale=True,
+                    desc=f"eval SNN (T={timesteps})")
     for images, labels in loader:
         images, labels = images.to(device), labels.to(device)
         artifact.reset_state(); feature_sum = None
@@ -26,6 +29,9 @@ def evaluate_snn(model, pool, artifact, loader, class_names, timesteps=128, devi
         logits = model.logit_scale.exp() * features @ text_features.T
         pred = logits.argmax(1)
         correct += (pred == labels).sum().item(); total += labels.numel()
+        progress.update(labels.numel())
+        progress.set_postfix(top1=f"{correct / total:.4f}")
+    progress.close()
     return correct / total if total else 0.0
 
 def main():
