@@ -1,3 +1,6 @@
 [submodule "CLIP"]
 	path = CLIP
 	url = https://github.com/openai/CLIP.git
+[submodule "ANN-to-SNN-DCGS"]
+	path = ANN-to-SNN-DCGS
+	url = https://github.com/h-z-h-cell/ANN-to-SNN-DCGS.git
