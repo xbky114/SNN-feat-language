@@ -1,0 +1,5 @@
+neuron: IF
+time_steps: 1
+threshold_mode: 99.9
+threshold_level: layer
+num_thresholds: 1
