@@ -8,7 +8,7 @@ import numpy as np
 import os
 import utils
 class Threshold_Getter(nn.Module):
-    def __init__(self, dataloader, mode='99.9', level = 'layer', device=None, momentum=0.1, output_fx=False, convert_attn=False):
+    def __init__(self, dataloader, mode='99.9', level = 'layer', device=None, momentum=0.1, output_fx=False):
         super().__init__()
         self.dataloader = dataloader
         self.mode = mode
@@ -16,7 +16,6 @@ class Threshold_Getter(nn.Module):
         self.device = device
         self.momentum = momentum
         self.output_fx = output_fx
-        self.convert_attn = convert_attn
 
     def forward(self, model: nn.Module):
         if self.device is None:
@@ -27,10 +26,7 @@ class Threshold_Getter(nn.Module):
             model_with_hook = Threshold_Getter.set_voltagehook_under_graph(model, mode=self.mode, momentum=self.momentum).to(self.device)
         else:
             model.eval()
-            model_with_hook = Threshold_Getter.replace_nonlinear_by_hook(
-                model, mode=self.mode, momentum=self.momentum, level=self.level,
-                convert_attn=getattr(self, 'convert_attn', False),
-            ).to(self.device)
+            model_with_hook = Threshold_Getter.replace_nonlinear_by_hook(model, mode=self.mode, momentum=self.momentum, level=self.level).to(self.device)
         for batch_idx, (imgs, _) in enumerate(tqdm(self.dataloader)):
             # if batch_idx>10:
             #     break
@@ -51,27 +47,13 @@ class Threshold_Getter(nn.Module):
         return model
     
     @staticmethod
-    def replace_nonlinear_by_hook(model, momentum, mode, level, convert_attn=False, in_attnpool=False):
+    def replace_nonlinear_by_hook(model, momentum, mode, level):
         for name, module in model._modules.items():
-            if name == 'attnpool' and not convert_attn:
-                continue
-            next_in_attnpool = in_attnpool or name == 'attnpool'
             if hasattr(module, "_modules"):
-                Threshold_Getter.replace_nonlinear_by_hook(
-                    module, mode=mode, momentum=momentum, level=level,
-                    convert_attn=convert_attn, in_attnpool=next_in_attnpool,
-                )
+                Threshold_Getter.replace_nonlinear_by_hook(module, mode=mode, momentum=momentum, level=level)
             if module.__class__.__name__.lower() in ["relu",'gelu','silu','layernorm','groupnorm','softmax','myat','linear','conv2d']:
-                hook_level = level
-                if (
-                    convert_attn
-                    and next_in_attnpool
-                    and module.__class__.__name__.lower() == 'linear'
-                ):
-                    hook_level = 'channel_last'
-                model._modules[name] = ThreHook(
-                    mode=mode, momentum=momentum, out_layer=module, level=hook_level
-                )
+                model._modules[name] = ThreHook(mode=mode, momentum=momentum, out_layer=module, level=level)
+                # print("Replace "+module.__class__.__name__.lower()+" By ThreHook")
         return model
 
     @staticmethod
@@ -236,8 +218,9 @@ class ThreHook(nn.Module):
         self.level=level
         
     def get_scale_from_var(self, T=64):
-        if self.mean is None:
-            return
+        # self.scale = torch.ones_like(self.mean)*0.1
+        # self.scale = self.mean+4*self.var
+        # print(self.mean,self.var,self.scale)
         self.scale = torch.ones_like(self.mean)
         tmp = self.scale.clone().detach()
         for idx in range(100):
@@ -256,8 +239,6 @@ class ThreHook(nn.Module):
             dims = [i for i in range(x.ndim)]
         elif self.level == 'channel':
             dims = [i for i in range(x.ndim) if i != 1]
-        elif self.level == 'channel_last':
-            dims = [i for i in range(x.ndim - 1)]
         elif self.level=='neuron':
             dims = [0]
         err_msg = 'You have used a non-defined Method to get Threshold.'

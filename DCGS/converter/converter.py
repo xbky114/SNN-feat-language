@@ -81,82 +81,16 @@ class Converter(nn.Module):
             print("Unsupported Neuron Name")
     
     @staticmethod
-    def _clip_skip_attnpool(name, convert_attn):
-        return name == 'attnpool' and not convert_attn
-
-    @staticmethod
-    def _normalize_linear_threshold(thre, in_features):
-        thre = thre * (thre >= 0).float()
-        if thre.numel() == in_features:
-            return thre.reshape(1, 1, in_features)
-        if thre.numel() == 1:
-            return thre.view(1, 1, 1).expand(1, 1, in_features).clone()
-        return thre.amax().expand(1, 1, in_features).clone()
-
-    @staticmethod
-    def _convert_clip_attnpool_threhook(module, neuron, step_mode, T, args, num_thresholds=None):
-        out_name = module.out.__class__.__name__.lower()
-        thre = module.scale
-        if thre is None:
-            raise ValueError(
-                f"Missing calibrated threshold for attnpool.{out_name}; "
-                "re-run get_threshold with convert_attn: true after updating ClipModifiedResNet."
-            )
-        thre = thre * (thre >= 0).float()
-        attn_c = getattr(args, 'c', 1.0)
-        thre = thre * attn_c
-        attn_step_mode = 's'
-        neuron_kwargs = dict(T=T, thresh=thre, step_mode=attn_step_mode)
-        if num_thresholds is not None:
-            neuron_kwargs['num_thresholds'] = num_thresholds
-        if out_name == 'myat':
-            thre2 = module.scale2
-            if thre2 is None:
-                raise ValueError(
-                    "Missing calibrated threshold scale2 for attnpool MyAt; re-run get_threshold."
-                )
-            thre2 = thre2 * (thre2 >= 0).float() * attn_c
-            neuron_kwargs2 = dict(T=T, thresh=thre2, step_mode=attn_step_mode)
-            if num_thresholds is not None:
-                neuron_kwargs2['num_thresholds'] = num_thresholds
-            return MyatSequential(
-                neuron(**neuron_kwargs),
-                neuron(**neuron_kwargs2),
-                AtNeuron(T=args.time, step_mode=attn_step_mode, coding_type=args.coding_type),
-            )
-        if out_name in ['linear', 'conv2d']:
-            thre = Converter._normalize_linear_threshold(thre, module.out.in_features)
-            neuron_kwargs['thresh'] = thre
-            return nn.Sequential(neuron(**neuron_kwargs), module.out)
-        return exp_comp_neuron(
-            module.out, T=args.time, step_mode=attn_step_mode, coding_type=args.coding_type
-        )
-
-    @staticmethod
-    def replace_relu_by_IF(model,step_mode,T,neuron,args, in_attnpool=False):
-        convert_attn = getattr(args, 'convert_attn', False)
+    def replace_relu_by_IF(model,step_mode,T,neuron,args):
         for name, module in model._modules.items():
-            if Converter._clip_skip_attnpool(name, convert_attn):
-                continue
-            next_in_attnpool = in_attnpool or name == 'attnpool'
             if module.__class__.__name__.lower()=="relu":
                 model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode)
-            elif "threhook" in module.__class__.__name__.lower():
-                out_name = module.out.__class__.__name__.lower()
-                if out_name == 'relu':
-                    thre = model._modules[name].scale
-                    thre = thre*(thre>=0).float()
-                    model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode)
-                elif args.model_name == 'clip_rn50' and next_in_attnpool and convert_attn:
-                    model._modules[name] = Converter._convert_clip_attnpool_threhook(
-                        module, neuron, step_mode, T, args
-                    )
-                elif args.model_name == 'clip_rn50' and not next_in_attnpool and out_name in ['linear', 'conv2d']:
-                    model._modules[name] = module.out
+            elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
+                thre = model._modules[name].scale
+                thre = thre*(thre>=0).float()
+                model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode)
             elif hasattr(module, "_modules"):
-                model._modules[name] = Converter.replace_relu_by_IF(
-                    module, step_mode, T, neuron, args=args, in_attnpool=next_in_attnpool
-                )
+                model._modules[name] = Converter.replace_relu_by_IF(module,step_mode,T,neuron,args=args)
         return model 
     
     @staticmethod
@@ -173,12 +107,8 @@ class Converter(nn.Module):
         return model
     
     @staticmethod
-    def replace_relu_by_MTH(model,step_mode,T,neuron,num_thresholds,args, in_attnpool=False):
-        convert_attn = getattr(args, 'convert_attn', False)
+    def replace_relu_by_MTH(model,step_mode,T,neuron,num_thresholds,args):
         for name, module in model._modules.items():
-            if Converter._clip_skip_attnpool(name, convert_attn):
-                continue
-            next_in_attnpool = in_attnpool or name == 'attnpool'
             if module.__class__.__name__.lower()=="relu":# 没有用，用于不统计直接转
                 model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode,num_thresholds=num_thresholds)
             elif args.model_name in ['fcos_resnet50_fpn', 'retinanet_resnet50_fpn', 'retinanet_resnet50_fpn_v2']:
@@ -192,26 +122,15 @@ class Converter(nn.Module):
                     model._modules[name] = exp_comp_neuron(module.out,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
                 elif hasattr(module, "_modules"):
                     model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
-            elif args.model_name in ['vgg16', 'vgg16_bn', 'vgg19', 'vgg19_bn', 'resnet18', 'resnet20', 'resnet34', 'resnet50', 'resnet101', 'resnet152', 'clip_rn50']:
+            elif args.model_name in ['vgg16', 'vgg16_bn', 'vgg19', 'vgg19_bn', 'resnet18', 'resnet20', 'resnet34', 'resnet50', 'resnet101', 'resnet152']:
                 if "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
                     thre = model._modules[name].scale
                     thre = thre*(thre>=0).float()
                     model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds)
-                elif (
-                    args.model_name == 'clip_rn50'
-                    and next_in_attnpool
-                    and convert_attn
-                    and "threhook" in module.__class__.__name__.lower()
-                ):
-                    model._modules[name] = Converter._convert_clip_attnpool_threhook(
-                        module, neuron, step_mode, T, args, num_thresholds=num_thresholds
-                    )
                 elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower() in ['linear','conv2d']:
                     model._modules[name] = module.out
                 elif hasattr(module, "_modules"):
-                    model._modules[name] = Converter.replace_relu_by_MTH(
-                        module, step_mode, T, neuron, num_thresholds, args, in_attnpool=next_in_attnpool
-                    )
+                    model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
             else:
                 if "threhook" in module.__class__.__name__.lower():
                     scale = 8

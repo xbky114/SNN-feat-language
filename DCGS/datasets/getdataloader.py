@@ -1,21 +1,8 @@
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 import torch
 import os
 from datasets.augment import Cutout, CIFAR10Policy
-
-
-class SingleImageDataset(Dataset):
-    def __init__(self, image_path, transform):
-        self.image_path = image_path
-        self.transform = transform
-
-    def __len__(self):
-        return 1
-
-    def __getitem__(self, idx):
-        from PIL import Image
-        return self.transform(Image.open(self.image_path).convert('RGB')), 0
 
 # your own data dir
 DIR = {'CIFAR10': '../data', 'CIFAR100': '../data', 'ImageNet': '../data/', 'COCO': '../data/', }
@@ -59,15 +46,7 @@ def create_dataloader(dataset, batch_size, shuffle, num_workers, distributed):
         return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=torch.cuda.is_available())
     
 def GetImageNet(args):
-    if args.model_name == 'clip_rn50':
-        trans = transforms.Compose([
-            transforms.Resize(size=224, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-            transforms.CenterCrop(size=(224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
-                                 std=[0.26862954, 0.26130258, 0.27577711]),
-        ])
-    elif 'resnet' in args.model_name or 'vgg' in args.model_name:
+    if 'resnet' in args.model_name or 'vgg' in args.model_name:
         trans = transforms.Compose([
                     transforms.Resize(size=235, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
                     transforms.CenterCrop(size=(224, 224)),
@@ -102,12 +81,7 @@ def GetImageNet(args):
     else:
         train_dataloader = None
 
-    val_root = os.path.join(args.dataset_path, 'val')
-    if args.model_name == 'clip_rn50' and not os.path.isdir(val_root):
-        clip_image_path = getattr(args, 'clip_image_path', '../CLIP/CLIP.png')
-        test_data = SingleImageDataset(clip_image_path, trans)
-    else:
-        test_data = datasets.ImageFolder(root=val_root, transform=trans)
+    test_data = datasets.ImageFolder(root=os.path.join(args.dataset_path, 'val'), transform=trans)
     test_dataloader = create_dataloader(test_data, args.batchsize, shuffle=False, num_workers=2, distributed=args.distributed)
 
     

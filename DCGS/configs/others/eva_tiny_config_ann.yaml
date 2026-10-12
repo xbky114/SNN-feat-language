@@ -1,0 +1,52 @@
+# Model configuration
+
+model_name: eva02_tiny
+load_name: "../models/vit_model/eva02_tiny_patch14_336.pth"
+
+# model_name: eva02_small
+# load_name: "../models/vit_model/eva02_small_patch14_336.pth"
+
+# model_name: eva02_base
+# load_name: "../models/vit_model/eva02_base_patch14_448.pth"
+
+# model_name: eva02_large
+# load_name: "../models/vit_model/eva02_large_patch14_448.pth"
+
+# model_name: vit_small
+# load_name: "../models/vit_model/vit_small_patch16_224.pth"
+
+# model_name: vit_base
+# load_name: "../models/vit_model/vit_base_patch16_224.pth"
+# model_name: vit_large
+# load_name: "../models/vit_model/vit_large_patch16_224.pth"
+mode: test_ann                  # Operation mode: test_ann, get_threshold, test_snn, train_snn
+save_name: checkpoint           # Name for saving the model
+
+# Threshold configuration
+threshold_mode: "99.9%"         # Threshold mode for SNN neurons
+output_fx: True
+
+# Neuron configuration
+neuron_name: IF                 # Neuron model: IF, IF_with_neg, LIF, MTH
+coding_type: rate               # Coding type: rate or diff
+
+# Task configuration
+task: classification            # Task type: classification or others
+
+# Dataset configuration
+dataset: imagenet               # Dataset name
+dataset_path: "../data"         # Path to the dataset
+batchsize: 16                  # Batch size for training or testing
+
+# Device configuration
+device: "0"                     # CUDA device ID (e.g., 0 for single GPU)
+distributed: false              # Enable distributed training (true or false)
+
+# Logger configuration
+logger: false                    # Enable logging
+logger_path: "logs/log.txt"     # Path to save logs
+
+# Training and Testing configuration
+seed: 2024                      # Random seed for reproducibility
+time: 1                         # SNN simulation time (0 for default behavior)
+# 73.382

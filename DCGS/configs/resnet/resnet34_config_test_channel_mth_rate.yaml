@@ -1,0 +1,72 @@
+# Model configuration
+model_name: resnet34            # Model class name
+# load_name: "./output/threshold_resnet18.pth"
+# load_name: "./output/threshold_resnet18_neuron.pth"
+load_name: "./output/threshold_resnet34_channel.pth"
+# load_name: "./output/threshold_resnet18_channel_999.pth"
+# load_name: "./output/threshold_resnet18_channel.pth"
+
+# load_name: "./output/threshold_resnet18_neuron_999.pth"
+# load_name: "./output/threshold_resnet18_999.pth"
+
+# load_name: "checkpoint.pth"
+# model_name: resnet34            # Model class name
+# load_name: "../models/qe-conversion/resnet34/resnet34_imagenet.pth"
+# model_name: vgg16_bn
+# load_name: "../models/qe-conversion/vgg16/vgg16_bn_imagenet.pth"
+
+# mode: test_ann
+mode: test_snn                  # Operation mode: test_ann, get_threshold, test_snn, train_snn
+sop: True
+save_name: ./output/threshold_resnet34_channel           # Name for saving the model
+
+# Threshold configuration
+# threshold_mode: "99.9%"         # Threshold mode for SNN neurons
+threshold_mode: "var"         # Threshold mode for SNN neurons
+# threshold_level: "neuron"
+# threshold_level: "channel"
+# threshold_level: "layer"
+fx: False
+threshold_scale: 1.0
+
+# Neuron configuration
+neuron_name: MTH_with_neg        # Neuron model: IF, IF_with_neg, LIF, MTH
+# neuron_name: MTH_with_neg        # Neuron model: IF, IF_with_neg, LIF, MTH
+num_thresholds : 1
+step_mode: 'm'
+coding_type: rate               # Coding type: rate or leaky_rate or diff
+# coding_type: rate               # Coding type: rate or leaky_rate or diff
+fuse: False
+
+# Task configuration
+task: classification            # Task type: classification or others
+
+# Dataset configuration
+dataset: imagenet               # Dataset name
+dataset_path: "../data"         # Path to the dataset
+batchsize: 50                  # Batch size for training or testing
+
+# Device configuration
+device: "0"                     # CUDA device ID (e.g., 0 for single GPU)
+distributed: false              # Enable distributed training (true or false)
+
+# Logger configuration
+logger: false                    # Enable logging
+logger_path: "logs/log.txt"     # Path to save logs
+
+# Training and Testing configuration
+seed: 2024                      # Random seed for reproducibility
+time: 64                        # SNN simulation time (0 for default behavior)
+
+#批次： 999  最终准确率： 76.296
+# 平均准确率: 28.548, 60.418, 69.874, 73.982, 75.268, 75.824, 75.996, 76.104, 76.138, 76.194, 76.218, 76.252, 76.276, 76.27, 76.288, 76.296
+# 瞬时发射率: 0.4526, 0.4697, 0.3939, 0.3468, 0.2813, 0.2168, 0.1595, 0.1173, 0.1001, 0.0857, 0.0794, 0.067, 0.0636, 0.0562, 0.0556, 0.0503
+# 平均发射率: 0.4526, 0.4611, 0.4387, 0.4157, 0.3888, 0.3602, 0.3315, 0.3047, 0.282, 0.2624, 0.2457, 0.2308, 0.218, 0.2064, 0.1964, 0.1872
+# 总能耗: 0.0885, 0.1804, 0.2575, 0.3254, 0.3804, 0.4228, 0.454, 0.477, 0.4966, 0.5133, 0.5289, 0.542, 0.5544, 0.5654, 0.5763, 0.5861
+
+
+# 批次： 999  最终准确率： 76.292
+# 平均准确率: 28.548, 60.4, 69.838, 73.95, 75.272, 75.836, 76.028, 76.114, 76.164, 76.234, 76.278, 76.288, 76.29, 76.292, 76.3, 76.292
+# 瞬时发射率: 0.4526, 0.4713, 0.4141, 0.4009, 0.3593, 0.3094, 0.2564, 0.2063, 0.1712, 0.1575, 0.1443, 0.1243, 0.119, 0.1099, 0.1037, 0.1043
+# 平均发射率: 0.4526, 0.462, 0.446, 0.4347, 0.4196, 0.4013, 0.3806, 0.3588, 0.3379, 0.3199, 0.3039, 0.289, 0.2759, 0.264, 0.2533, 0.244
+# 总能耗: 0.0885, 0.1808, 0.2618, 0.3402, 0.4105, 0.4711, 0.5212, 0.5616, 0.5951, 0.6259, 0.6541, 0.6784, 0.7017, 0.7232, 0.7435, 0.763

@@ -19,13 +19,6 @@ def valpool(args):
             return val_ann_object_detection
         elif args.mode == 'test_snn':
             return val_snn_object_detection
-    elif args.task == 'clip':
-        if args.mode == 'test_ann':
-            return val_ann_clip
-        elif args.mode == 'get_threshold':
-            return val_ann_clip
-        elif args.mode == 'test_snn':
-            return val_snn_clip
     else:
         print("still not support this task for val")
         exit(0)

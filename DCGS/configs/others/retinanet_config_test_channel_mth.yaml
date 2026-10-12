@@ -1,0 +1,39 @@
+# Model configuration
+model_name: retinanet_resnet50_fpn            # Model class name
+load_name: "./output/threshold_retinanet_channel_999.pth"
+# model_name: resnet34            # Model class name
+# load_name: "../models/qe-conversion/resnet34/resnet34_imagenet.pth"
+# model_name: vgg16_bn
+# load_name: "../models/qe-conversion/vgg16/vgg16_bn_imagenet.pth"
+mode: test_snn                  # Operation mode: test_ann, get_threshold, test_snn, train_snn
+save_name: xxx           # Name for saving the model
+
+# Threshold configuration
+threshold_mode: "99.9%"         # Threshold mode for SNN neurons
+threshold_level: "channel"        
+output_fx: False
+
+# Neuron configuration
+neuron_name: MTH_with_neg                 # Neuron model: IF, IF_with_neg, LIF, MTH
+coding_type: rate               # Coding type: rate or diff
+step_mode: 'm'
+
+# Task configuration
+task: object_detection            # Task type: classification or others
+
+# Dataset configuration
+dataset: coco               # Dataset name
+dataset_path: "../data"         # Path to the dataset
+batchsize: 1                  # Batch size for training or testing
+
+# Device configuration
+device: "0"                     # CUDA device ID (e.g., 0 for single GPU)
+distributed: false              # Enable distributed training (true or false)
+
+# Logger configuration
+logger: false                    # Enable logging
+logger_path: "logs/log.txt"     # Path to save logs
+
+# Training and Testing configuration
+seed: 2024                      # Random seed for reproducibility
+time: 8                         # SNN simulation time (0 for default behavior)
