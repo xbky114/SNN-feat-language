@@ -23,7 +23,8 @@ def convert(visual, plan, params, calibration_loader=None, thresholds=None):
     if params.neuron not in ('IF','MTH'): raise ValueError('neuron must be IF or MTH')
     if thresholds is None:
         if calibration_loader is None: raise ValueError('calibration_loader or thresholds required')
-        thresholds=collect_thresholds(visual, calibration_loader, plan.targets, params.threshold_mode)
+        thresholds=collect_thresholds(visual, calibration_loader, plan.targets,
+                                      params.threshold_mode, level=params.threshold_level)
     model=copy.deepcopy(visual)
     cls=IFRate if params.neuron=='IF' else MTHRate
     for t in plan.targets:
