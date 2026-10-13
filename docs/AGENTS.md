@@ -52,7 +52,7 @@ clip.visual            # visual module passed to conversion
 clip.pool              # visual pooling component
 clip.preprocessing     # external preprocessing callable
 clip.to_be_converted   # currently "visual"
-clip.conversion_plan() # ANN replacement targets
+clip.conversion_plan() # ANN replacement targets, usually all 'ReLU'
 ```
 
 The OpenAI RN50 adapter loads the bundled CLIP implementation and exposes a
@@ -76,14 +76,6 @@ artifact = convert_clip(
 `to_be_converted`, and dispatches to the selected method. The text tower is
 never passed to conversion.
 
-`to_snn.DCGS` exposes `DCGSConversionParams`, `convert`, the compatibility
-alias `Convert_by_DCGS`, `VisualSNNArtifact`, threshold collection and
-statistics save/load helpers. Calibration consumes image-only dataloaders and
-stores automatically named caches under `to_snn/DCGS/`, using the model,
-statistical method, percentile when applicable, and UTC timestamp.
-
-The current DCGS scope is single-step vanilla rate coding with IF and MTH
-neurons. Differential, negative, leaky, and multi-step modes are excluded.
 
 ## Artifact lifecycle
 
@@ -94,8 +86,14 @@ artifact.save(path)
 loaded = artifact.load(path)
 ```
 
-The checkpoint stores the converted visual model, `DCGSConversionParams`, and
+The checkpoint stores the converted visual model, `ConversionParams`, and
 the `ConversionPlan`. The converted model contains neuron modules and their
 registered threshold buffers, so loading does not require the original ANN,
 calibration dataloader, or threshold cache. The ANN text tower is retained by
 the caller when semantic CLIP image/text evaluation is needed.
+
+
+# Development requirements
+1. Use conda 'llava' environment
+2. Pay attention to code readability. Do not use ';' to seperate lines. Just create a new line.
+3. Focus on extendability. The design of the codebase provides API to be compatible with different CLIP models and different conversion methods. If a function is resuable (for example, you are dealing with yaml->ConversionParams, or finding certain clip in all CLIPs/), you should design/use an abstract interface / API, rather than mention specific name.
