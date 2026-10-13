@@ -58,7 +58,7 @@ class WordNetNouns:
                 cursor += 4
             self.synsets[offset] = (lemmas[0], parent_offsets)
 
-    def path(self, wnid: str) -> list[str]:
+    def path(self, wnid: str) -> list[tuple[str, str]]:
         # ImageNet WNIDs encode the noun synset offset directly (nXXXXXXXX).
         offset = int(wnid[1:])
         if offset not in self.synsets:
@@ -68,7 +68,7 @@ class WordNetNouns:
         while offset not in seen:
             seen.add(offset)
             name, parents = self.synsets[offset]
-            result.append(name)
+            result.append((f"n{offset:08d}", name))
             if not parents:
                 break
             offset = parents[0]
@@ -80,7 +80,7 @@ def class_ids(args: argparse.Namespace) -> list[str]:
     ids = sorted(p.name for p in Path(args.imagenet_root).iterdir() if p.is_dir())
     ids = [x for x in ids if WNID_RE.fullmatch(x)]
     if not ids:
-        raise ValueError("No ImageNet WNIDs found; provide --classes or --imagenet-root")
+        raise ValueError("No ImageNet WNIDs found under --imagenet-root")
     return ids
 
 
@@ -96,22 +96,37 @@ def build(args: argparse.Namespace) -> dict:
     levels = {str(i): set() for i in range(bins + 1)}
     classes = {}
     for wnid, path in paths.items():
-        reps = [path[0]]
-        levels["0"].add(path[0])
+        reps = [path[0][0]]
+        levels["0"].add(path[0][0])
         leaf_path = path[1:]
         for i in range(1, bins + 1):
             end = (i * len(leaf_path) + bins - 1) // bins
             representative = leaf_path[end - 1]
-            reps.append(representative)
-            levels[str(i)].add(representative)
-        classes[wnid] = {"text": path[-1], "path": path, "representatives": reps}
+            reps.append(representative[0])
+            levels[str(i)].add(representative[0])
+        classes[wnid] = {
+            "text": path[-1][1],
+            "path": [node[1] for node in path],
+            "representatives": reps,
+        }
 
+    level_data = {}
+    for key, wnids in levels.items():
+        ordered_wnids = sorted(wnids)
+        level_data[key] = {
+            "num_classes": len(ordered_wnids),
+            "wnids": ordered_wnids,
+            "texts": [wn.synsets[int(wnid[1:])][0] for wnid in ordered_wnids],
+            "class_to_idx": {
+                wnid: index for index, wnid in enumerate(ordered_wnids)
+            },
+        }
     return {
         "num_classes": len(ids),
         "num_bins": bins,
         "parent_rule": "first noun hypernym in WordNet file order",
         "classes": classes,
-        "levels": {key: sorted(value) for key, value in levels.items()},
+        "levels": level_data,
     }
 
 
