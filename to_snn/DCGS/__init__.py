@@ -1,4 +1,4 @@
-from .config import DCGSConversionParams
+from .config import DCGSConversionParams, ConversionParams
 from .converter import convert, VisualSNNArtifact
 from .threshold import collect_thresholds, save_statistics, load_statistics
 

@@ -202,7 +202,6 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
-get_snn.py
 
 # Ruff stuff:
 .ruff_cache/
@@ -224,6 +223,7 @@ __marimo__/
 # data
 data/
 results/
+weights/
 
 # output
 *.pt
