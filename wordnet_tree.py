@@ -1,6 +1,6 @@
 """Build a compact, reusable WordNet hierarchy for ImageNet-1K.
 
-- Use noun WordNe.
+- Use noun WordNet.
 - Map every ImageNet-1K class/WNID such as n01440764 to its WordNet noun synset.
 - For each class, trace hypernyms toward the noun root. 
   At every multiple-parent choice, deterministically select the first parent, producing one unique path:
@@ -10,6 +10,8 @@
   Treat the root as level 0, giving an (N+1)-level simplified tree.
   So the N+1 level = {1000 most detailed classes}
 - Return, for every level j = 0…N, all unique representative nodes at that level.
+
+Doc on JSON: docs/WNTree.md
 """
 from __future__ import annotations
 
