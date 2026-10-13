@@ -93,7 +93,8 @@ calibration dataloader, or threshold cache. The ANN text tower is retained by
 the caller when semantic CLIP image/text evaluation is needed.
 
 
-# Development requirements
+# requirements
 1. Use conda 'llava' environment
 2. Pay attention to code readability. Do not use ';' to seperate lines. Just create a new line.
-3. Focus on extendability. The design of the codebase provides API to be compatible with different CLIP models and different conversion methods. If a function is resuable (for example, you are dealing with yaml->ConversionParams, or finding certain clip in all CLIPs/), you should design/use an abstract interface / API, rather than mention specific name.
+3. Focus on extendability. The design of the codebase provides API to be compatible with different CLIP models and different conversion methods. This philosophy shoubd be maintained through the whole development. Write a factory rather than picking up specific names.
+4. Your response should be very precise and concise without redundant, stupid, irrelavant, not-self-contained words.
