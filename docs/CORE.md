@@ -3,7 +3,8 @@
 ## Purpose
 
 This project studies how CLIP visual representations change when the visual
-tower is converted from an artificial neural network (ANN) into a rate-coded
+tower (currently only CNN backbone; the conversion of nonlinear pool is a future issue) 
+is converted from an artificial neural network (ANN) into a rate-coded
 spiking neural network (SNN). The text tower remains an ANN. A converted
 artifact therefore represents the visual tower only.
 
