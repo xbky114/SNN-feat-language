@@ -25,6 +25,29 @@ class OpenAIRN50Adapter(CLIPAdapter):
     def pool(self): return self._pool
     def conversion_plan(self):
         return make_conversion_plan(self.visual)
+    def encode_image(self, image):
+        return self._model.encode_image(image)
+
+    def encode_text(self, text):
+        return self._model.encode_text(text)
+
+    def tokenize(self, texts, context_length=77, truncate=False):
+        from .clip import tokenize
+        return tokenize(texts, context_length=context_length, truncate=truncate)
+
+    @property
+    def logit_scale(self):
+        return self._model.logit_scale
+
+    @property
+    def input_resolution(self):
+        return self._model.visual.input_resolution
+
+    @property
+    def dtype(self):
+        return self._model.dtype
+
+    
 def make_conversion_plan(model):
     root=model.visual if hasattr(model, 'visual') else model
     targets=[]

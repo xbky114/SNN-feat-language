@@ -11,6 +11,7 @@ class CLIPAdapter(nn.Module):
     def __init__(self):
         super().__init__()
 
+    # neural network modules
     @property
     def model(self):
         raise NotImplementedError
@@ -23,7 +24,41 @@ class CLIPAdapter(nn.Module):
     @property
     def pool(self):
         raise NotImplementedError
+
+    # expose the module names to be replaced by Spiking neurons.
     def conversion_plan(self): raise NotImplementedError
+
+    # Inference interface shared by CLIP backends.  Keeping these methods on
+    # the adapter means callers never need to depend on a backend's model
+    # implementation or tokenizer module.
+    def encode_image(self, image):
+        raise NotImplementedError
+
+    def encode_text(self, text):
+        raise NotImplementedError
+
+    def tokenize(self, texts, context_length=77, truncate=False):
+        raise NotImplementedError
+
+    @property
+    def logit_scale(self):
+        raise NotImplementedError
+
+    @property
+    def input_resolution(self):
+        raise NotImplementedError
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
+    def forward(self, image, text):
+        image_features = self.encode_image(image)
+        text_features = self.encode_text(text)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        logits_per_image = self.logit_scale.exp() * image_features @ text_features.t()
+        return logits_per_image, logits_per_image.t()
 
 
 def get_clip(name: str, **kwargs) -> nn.Module:
