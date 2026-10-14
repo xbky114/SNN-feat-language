@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from .prototype import SNNArtifact, ConversionPlan, ConversionTarget
+from .coding import CODING
 from .DCGS import convert
 from CLIPs import get_clip
 
