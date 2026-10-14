@@ -5,10 +5,9 @@ import torch
 from dataloader import imagenet_dataloaders, resolve_class_names
 
 def class_text_features(model, class_names, device):
-    from CLIPs.openai_rn50.clip import tokenize
     prompts = [f"a photo of a {name.replace('_', ' ')}" for name in class_names]
     with torch.no_grad():
-        text = model.encode_text(tokenize(prompts).to(device))
+        text = model.encode_text(model.tokenize(prompts).to(device))
     return text / text.norm(dim=-1, keepdim=True)
 
 @torch.no_grad()
@@ -32,10 +31,9 @@ def main():
     a = p.parse_args()
     from CLIPs import get_clip
     adapter = get_clip(a.clip, device=a.device)
-    model = adapter.model
     evaluation, _ = imagenet_dataloaders(a.data, batch_size=a.batch_size, calibration_size=0,
-                                          num_workers=a.workers, image_size=model.visual.input_resolution)
-    print(f"top1={evaluate(model, evaluation, resolve_class_names(evaluation.dataset), a.device):.6f}")
+                                          num_workers=a.workers, image_size=adapter.input_resolution)
+    print(f"top1={evaluate(adapter, evaluation, resolve_class_names(evaluation.dataset), a.device):.6f}")
 
 if __name__ == "__main__":
     main()
