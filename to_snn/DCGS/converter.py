@@ -21,16 +21,22 @@ class VisualSNNArtifact(SNNArtifact):
         return cls(payload['visual_model'], payload.get('conversion_params'), payload.get('conversion_plan'))
 def convert(visual, plan, params, calibration_loader=None, thresholds=None):
     if params.neuron not in ('IF','MTH'): raise ValueError('neuron must be IF or MTH')
+    print(f"[DCGS] conversion started (neuron={params.neuron}, targets={len(plan.targets)})", flush=True)
     if thresholds is None:
         if calibration_loader is None: raise ValueError('calibration_loader or thresholds required')
         thresholds=collect_thresholds(
             visual, calibration_loader, plan.targets, params.threshold_mode,
             level=params.threshold_level, time_steps=params.time_steps,
             num_thresholds=params.num_thresholds)
+    else:
+        print(f"[DCGS] using supplied thresholds for {len(thresholds)} layers", flush=True)
     model=copy.deepcopy(visual)
     cls=IFRate if params.neuron=='IF' else MTHRate
+    replaced = 0
     for t in plan.targets:
         if t.kind not in ('relu','activation'): continue
         parent, name=t.path.rsplit('.',1) if '.' in t.path else ('',t.path); holder=model.get_submodule(parent) if parent else model
         setattr(holder,name,cls(thresholds[t.path], params.num_thresholds) if cls is MTHRate else cls(thresholds[t.path]))
+        replaced += 1
+    print(f"[DCGS] replaced {replaced} activation layers; conversion finished", flush=True)
     return VisualSNNArtifact(model, params, plan)

@@ -55,6 +55,8 @@ def collect_thresholds(model, loader, targets, mode='99.9', device=None,
                        level='layer', time_steps=1, num_thresholds=8):
     wanted=set(t.path for t in targets); vals=defaultdict(list); hooks=[]
     moments = {}
+    mode_name = str(mode).lower()
+    print(f"[DCGS] calibrating {len(wanted)} layers (mode={mode_name}, level={level})", flush=True)
     def record_moments(name, x):
         dims = tuple(i for i in range(x.ndim) if level != 'channel' or i != 1)
         mean = x.mean(dim=dims).detach()
@@ -70,18 +72,23 @@ def collect_thresholds(model, loader, targets, mode='99.9', device=None,
         moments[name] = (mean.clone(), var.clone(), count)
     for name in wanted:
         mod=model.get_submodule(name)
-        if str(mode).lower() == 'var':
+        if mode_name == 'var':
             hooks.append(mod.register_forward_pre_hook(
                 lambda m,a,n=name: record_moments(n, a[0])))
         else:
             hooks.append(mod.register_forward_hook(lambda m,a,o,n=name: vals[n].append(o.detach().cpu())))
     model.eval(); device=device or next(model.parameters(), torch.tensor(0)).device
     with torch.no_grad():
-        for batch in loader:
+        total = len(loader) if hasattr(loader, '__len__') else None
+        report_every = max(1, (total + 4) // 5) if total else 10
+        for batch_idx, batch in enumerate(loader, 1):
             model(batch.to(device) if torch.is_tensor(batch) else batch)
+            if batch_idx == 1 or batch_idx % report_every == 0 or (total and batch_idx == total):
+                suffix = f"/{total}" if total else ""
+                print(f"[DCGS] calibration batch {batch_idx}{suffix}", flush=True)
     for h in hooks: h.remove()
     out={}
-    if str(mode).lower() == 'var':
+    if mode_name == 'var':
         samples = int(time_steps) * (2 ** int(num_thresholds))
         for name, (mean, var, _) in moments.items():
             scale = torch.ones_like(mean)
@@ -92,6 +99,7 @@ def collect_thresholds(model, loader, targets, mode='99.9', device=None,
             scale[mask] = initial[mask]
             # Original converter zeros negative scales before constructing MTH.
             out[name] = (scale * (scale >= 0).float()).cpu()
+        print(f"[DCGS] computed variance thresholds for {len(out)} layers", flush=True)
         return out
     for name,v in vals.items():
         # Keep the original DCGS batch-wise calibration behavior.  Concatenating
@@ -116,6 +124,7 @@ def collect_thresholds(model, loader, targets, mode='99.9', device=None,
             # Original DCGS computes a percentile per calibration batch and
             # updates the stored scale with a sample-weighted average.
             out[name] = torch.stack([torch.quantile(z, q, dim=-1) for z in batches]).mean(0).clamp_min(1e-6)
+    print(f"[DCGS] computed {mode_name} thresholds for {len(out)} layers", flush=True)
     return out
 
 def save_statistics(statistics, directory, *, overwrite=False):
