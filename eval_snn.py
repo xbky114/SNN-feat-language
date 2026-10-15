@@ -6,7 +6,6 @@ the complete temporal record can be analysed without one very large file.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import importlib
 import json
 from pathlib import Path
@@ -42,7 +41,7 @@ def _metric_line(batch, total, depth, correct, selected, levels):
 
 @torch.no_grad()
 def evaluate(model, loader, tree, device, timesteps, images_per_file,
-             output_dir, print_interval):
+             output_dir, print_interval, log=None):
     model.eval().to(device)
     bins = int(tree["num_bins"])
     levels = [str(k) for k in range(1, bins + 1)]
@@ -58,7 +57,6 @@ def evaluate(model, loader, tree, device, timesteps, images_per_file,
     correct = {k: torch.zeros(timesteps, dtype=torch.float64) for k in levels}
     selected = {k: torch.zeros(timesteps, dtype=torch.float64) for k in levels}
     shard_path, shard_levels, shard_count, shard_no = [], {k: [] for k in levels}, 0, 0
-    batch_lines = []
 
     def flush_shard():
         nonlocal shard_path, shard_levels, shard_count, shard_no
@@ -103,16 +101,17 @@ def evaluate(model, loader, tree, device, timesteps, images_per_file,
             if shard_count == images_per_file:
                 flush_shard()
         if batch_no % print_interval == 0:
-            batch_lines.append(_metric_line(batch_no, total, depth[-1].item(),
-                                            {k: correct[k][-1].item() for k in levels},
-                                            {k: selected[k][-1].item() for k in levels}, levels))
+            line = _metric_line(batch_no, total, depth[-1].item(),
+                                {k: correct[k][-1].item() for k in levels},
+                                {k: selected[k][-1].item() for k in levels}, levels)
+            print(line, file=log, flush=True) if log is not None else print(line, flush=True)
     flush_shard()
     per_time = [{"timestep": t + 1, "semantic_depth": depth[t].item() / total,
                  "accuracy": {k: correct[k][t].item() / total for k in levels},
                  "selectivity": {k: selected[k][t].item() / total for k in levels}}
                 for t in range(timesteps)]
     return {"samples": total, "timesteps": timesteps,
-            "final": per_time[-1], "per_timestep": per_time}, batch_lines
+            "final": per_time[-1], "per_timestep": per_time}
 
 
 def main():
@@ -128,21 +127,18 @@ def main():
     if a.T <= 0 or a.images_per_file <= 0 or a.print_interval <= 0:
         p.error("--T, --images-per-file, and --print-interval must be positive")
     out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True)
-    # Evaluation itself is silent; write the final summary before batch lines
-    # so the log starts with the run configuration and final-time overview.
-    ann = get_clip(a.clip, device=a.device)
-    snn = SNNArtifact.load(a.snn, map_location=a.device)
-    model = CLIPWithSNNVisual(ann, snn, _coding(a.coding))
-    tree = json.loads(Path(a.tree).read_text())
-    loader = imagenet_dataloader(a.data, batch_size=a.batch_size,
-                                 num_workers=a.workers, image_size=model.input_resolution)
-    summary, lines = evaluate(model, loader, tree, a.device, a.T,
-                              a.images_per_file, out, a.print_interval)
-    with (out / "evaluation.log").open("w") as log, contextlib.redirect_stdout(log):
-        print(f"arguments={json.dumps(vars(a), sort_keys=True)}", flush=True)
-        print(f"final_summary={json.dumps(summary['final'], sort_keys=True)}", flush=True)
-        for line in lines:
-            print(line, flush=True)
+    log_path = out / "evaluation.log"
+    with log_path.open("w") as log:
+        print(f"arguments={json.dumps(vars(a), sort_keys=True)}", file=log, flush=True)
+        ann = get_clip(a.clip, device=a.device)
+        snn = SNNArtifact.load(a.snn, map_location=a.device)
+        model = CLIPWithSNNVisual(ann, snn, _coding(a.coding))
+        tree = json.loads(Path(a.tree).read_text())
+        loader = imagenet_dataloader(a.data, batch_size=a.batch_size,
+                                     num_workers=a.workers, image_size=model.input_resolution)
+        summary = evaluate(model, loader, tree, a.device, a.T,
+                           a.images_per_file, out, a.print_interval, log)
+        print(f"final_summary={json.dumps(summary['final'], sort_keys=True)}", file=log, flush=True)
     (out / "metrics.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 
