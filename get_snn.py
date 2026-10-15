@@ -2,7 +2,7 @@
 from __future__ import annotations
 import argparse
 from pathlib import Path
-from dataloader import imagenet_dataloaders
+from dataloader import calibration_dataloader
 from to_snn import convert_clip, load_conversion_params
 
 def main():
@@ -19,10 +19,10 @@ def main():
     a = p.parse_args()
     # The bundled RN50 preprocessing uses 224px inputs.  convert_clip loads
     # the requested adapter and dispatches the requested conversion method.
-    _, calibration = imagenet_dataloaders(a.data, batch_size=a.batch_size,
-                                           calibration_size=a.calibration_size,
-                                           image_size=224,
-                                           num_workers=a.workers)
+    calibration = calibration_dataloader(a.data, batch_size=a.batch_size,
+                                         calibration_size=a.calibration_size,
+                                         image_size=224,
+                                         num_workers=a.workers)
     params = load_conversion_params(a.params, a.meth)
     # Reuse the public factory API; it loads the named adapter and dispatches
     # the requested conversion method.  The already-created calibration loader
