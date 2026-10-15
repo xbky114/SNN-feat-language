@@ -52,6 +52,11 @@ class CLIPAdapter(nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
+    @property
+    def pool_dtype(self):
+        """dtype expected by the visual attention-pooling layer."""
+        return self.dtype
+
     def forward(self, image, text):
         image_features = self.encode_image(image)
         text_features = self.encode_text(text)

@@ -47,6 +47,18 @@ class OpenAIRN50Adapter(CLIPAdapter):
     def dtype(self):
         return self._model.dtype
 
+    @property
+    def pool_dtype(self):
+        # OpenAI CLIP can keep the CNN backbone in fp32 while its attention
+        # pool projections use the model's reduced-precision dtype.
+        q_proj = getattr(self._pool, 'q_proj', None)
+        if q_proj is not None and hasattr(q_proj, 'weight'):
+            return q_proj.weight.dtype
+        try:
+            return next(self._pool.parameters()).dtype
+        except StopIteration:
+            return self.dtype
+
     
 def make_conversion_plan(model):
     root=model.visual if hasattr(model, 'visual') else model
