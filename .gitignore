@@ -220,6 +220,9 @@ __marimo__/
 # Shell scripts
 *.sh
 
+# utility code
+utils/
+
 # data
 data/
 results/
