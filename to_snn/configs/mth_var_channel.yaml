@@ -1,5 +1,0 @@
-neuron: MTH
-time_steps: 256
-threshold_mode: var
-threshold_level: channel
-num_thresholds: 4
