@@ -48,12 +48,19 @@ def evaluate(model, loader, tree, device="cpu", print_interval=100, log=None):
         if log and batch_no % print_interval == 0:
             print(f"batch={batch_no} samples={total} semantic_depth={depth_sum / total:.6f} "
                   f"accuracy={json.dumps({k: correct[k] / total for k in level_keys})} "
-                  f"selectivity={json.dumps({k: selected[k] / total for k in level_keys})}", file=log)
+                  f"selectivity={json.dumps({k: selected[k] / total for k in level_keys})}",
+                  file=log, flush=True)
     summary = {"samples": total, "semantic_depth": depth_sum / total,
                "accuracy": {k: correct[k] / total for k in level_keys},
                "selectivity": {k: selected[k] / total for k in level_keys}}
-    artifact = {"full_logits": torch.cat(full_logits), "path_logits": torch.cat(path_logits),
-                "labels": torch.cat(saved_labels), "num_bins": bins}
+    # Split the concatenated level logits into independently addressable tensors.
+    widths = [levels[k]["num_classes"] for k in ["0"] + level_keys]
+    merged = torch.cat(full_logits)
+    artifact = {"path_logits": torch.cat(path_logits)}
+    start = widths[0]  # level 0 has one class and is retained only in path_logits
+    for key, width in zip(level_keys, widths[1:]):
+        artifact[f"logits_{key}"] = merged[:, start:start + width]
+        start += width
     return summary, artifact
 
 def main():
@@ -67,6 +74,7 @@ def main():
     from CLIPs import get_clip
     out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True)
     with (out / "evaluation.log").open("w") as log, contextlib.redirect_stdout(log):
+        print(f"arguments={json.dumps(vars(a), sort_keys=True, default=str)}", file=log, flush=True)
         adapter = get_clip(a.clip, device=a.device)
         tree = json.loads(Path(a.tree).read_text())
         evaluation = imagenet_dataloader(a.data, batch_size=a.batch_size,
@@ -74,7 +82,7 @@ def main():
         summary, artifact = evaluate(adapter, evaluation, tree, a.device, a.print_interval, log)
         torch.save(artifact, out / "logits.pt")
         (out / "metrics.json").write_text(json.dumps(summary, indent=2) + "\n")
-        print(json.dumps(summary, sort_keys=True), file=log)
+        print(json.dumps(summary, sort_keys=True), file=log, flush=True)
 
 if __name__ == "__main__":
     main()
