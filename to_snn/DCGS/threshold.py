@@ -57,6 +57,31 @@ def collect_thresholds(model, loader, targets, mode='99.9', device=None,
     moments = {}
     mode_name = str(mode).lower()
     print(f"[DCGS] calibrating {len(wanted)} layers (mode={mode_name}, level={level})", flush=True)
+    percentile = None
+    if mode_name not in ('var', 'max'):
+        percentile = float(str(mode).strip().rstrip('%')) / 100.0
+
+    def record_percentile(name, output):
+        # Reduce immediately on the device. Only one threshold vector per
+        # layer/batch is copied to CPU; never retain the full feature map.
+        # torch.quantile does not support float16 on some CUDA/PyTorch builds.
+        # Keep the model in its original dtype and promote only this reduction.
+        x = output.detach().float()
+        if str(level).lower() == 'channel' and x.ndim >= 2:
+            x = x.movedim(1, 0).reshape(x.shape[1], -1)
+            value = torch.quantile(x, percentile, dim=-1)
+        else:
+            value = torch.quantile(x.reshape(-1), percentile)
+        vals[name].append(value.cpu())
+
+    def record_max(name, output):
+        x = output.detach()
+        if str(level).lower() == 'channel' and x.ndim >= 2:
+            x = x.movedim(1, 0).reshape(x.shape[1], -1)
+            value = x.amax(dim=-1)
+        else:
+            value = x.amax()
+        vals[name].append(value.cpu())
     def record_moments(name, x):
         dims = tuple(i for i in range(x.ndim) if level != 'channel' or i != 1)
         mean = x.mean(dim=dims).detach()
@@ -75,14 +100,18 @@ def collect_thresholds(model, loader, targets, mode='99.9', device=None,
         if mode_name == 'var':
             hooks.append(mod.register_forward_pre_hook(
                 lambda m,a,n=name: record_moments(n, a[0])))
+        elif mode_name == 'max':
+            hooks.append(mod.register_forward_hook(lambda m,a,o,n=name: record_max(n, o)))
         else:
-            hooks.append(mod.register_forward_hook(lambda m,a,o,n=name: vals[n].append(o.detach().cpu())))
+            hooks.append(mod.register_forward_hook(lambda m,a,o,n=name: record_percentile(n, o)))
     model.eval(); device=device or next(model.parameters(), torch.tensor(0)).device
     with torch.no_grad():
         total = len(loader) if hasattr(loader, '__len__') else None
         report_every = max(1, (total + 4) // 5) if total else 10
         for batch_idx, batch in enumerate(loader, 1):
-            model(batch.to(device) if torch.is_tensor(batch) else batch)
+            if torch.is_tensor(batch):
+                batch = batch.to(device, non_blocking=(getattr(batch, 'is_pinned', lambda: False)()))
+            model(batch)
             if batch_idx == 1 or batch_idx % report_every == 0 or (total and batch_idx == total):
                 suffix = f"/{total}" if total else ""
                 print(f"[DCGS] calibration batch {batch_idx}{suffix}", flush=True)
@@ -101,29 +130,15 @@ def collect_thresholds(model, loader, targets, mode='99.9', device=None,
             out[name] = (scale * (scale >= 0).float()).cpu()
         print(f"[DCGS] computed variance thresholds for {len(out)} layers", flush=True)
         return out
-    for name,v in vals.items():
-        # Keep the original DCGS batch-wise calibration behavior.  Concatenating
-        # all RN50 feature maps can exceed torch.quantile's tensor-size limit.
-        if not v:
-            x = torch.tensor(1.)
-        else:
-            x = v[0]
-        # A channel threshold is one value per feature channel. Reduce batch
-        # and spatial dimensions while retaining the channel dimension.
-        if str(level).lower() == 'channel' and x.ndim >= 2:
-            batches = [z.movedim(1, 0).reshape(z.shape[1], -1) for z in v]
-        else:
-            batches = [z.reshape(-1) for z in v]
-        x = batches[0] if batches else torch.tensor(1.)
-        mode_name = str(mode).lower()
+    for name,batches in vals.items():
+        if not batches:
+            batches = [torch.tensor(1.)]
         if mode_name == 'max':
-            out[name] = x.max(dim=-1).values.clamp_min(1e-6) if x.ndim > 1 else x.max().clamp_min(1e-6)
+            out[name] = torch.stack(batches).mean(0).clamp_min(1e-6)
         else:
-            q = str(mode).strip().rstrip('%')
-            q = float(q) / 100.0
             # Original DCGS computes a percentile per calibration batch and
             # updates the stored scale with a sample-weighted average.
-            out[name] = torch.stack([torch.quantile(z, q, dim=-1) for z in batches]).mean(0).clamp_min(1e-6)
+            out[name] = torch.stack(batches).mean(0).clamp_min(1e-6)
     print(f"[DCGS] computed {mode_name} thresholds for {len(out)} layers", flush=True)
     return out
 
