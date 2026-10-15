@@ -76,7 +76,7 @@ class CLIPWithSNNVisual(CLIPAdapter):
 
     def calc_logits_through_time(self, img, texts, T):
         image_features = self.encode_image(img, T)
-        text_features = self.encode_text(self.tokenize(texts))
+        text_features = self.encode_text(self.tokenize(texts).to(img.device))
         return torch.stack(
             [self(image_features[t], text_features) for t in range(T)],
             dim=0,
