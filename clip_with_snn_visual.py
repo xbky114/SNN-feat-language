@@ -54,6 +54,10 @@ class CLIPWithSNNVisual(CLIPAdapter):
     def dtype(self):
         return self._clip.dtype
 
+    @property
+    def pool_dtype(self):
+        return self._clip.pool_dtype
+
     def encode_image(self, img, T):
         if T <= 0:
             raise ValueError("T must be positive")
@@ -61,9 +65,12 @@ class CLIPWithSNNVisual(CLIPAdapter):
         backbone_features = []
         for _ in range(T):
             backbone_features.append(self.visual(img))
+        # The converted CNN backbone commonly emits fp32 while OpenAI CLIP's
+        # attention pool (especially on CUDA) may retain fp16 parameters.
+        # Match the pool's projection dtype before invoking it.
         return torch.stack(
             [
-                self.pool(self.coding(backbone_features[:t]))
+                self.pool(self.coding(backbone_features[:t]).to(dtype=self.pool_dtype))
                 for t in range(1, T + 1)
             ],
             dim=0,
