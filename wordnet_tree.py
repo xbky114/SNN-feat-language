@@ -24,6 +24,23 @@ from pathlib import Path
 WNID_RE = re.compile(r"n\d{8}")
 
 
+def build_rompt(name: str, tree: dict, prompt_father_level: int | None = None) -> str:
+    """Build a CLIP prompt with an optional hierarchy representative."""
+    if prompt_father_level is None:
+        return f"a photo of {name}"
+    if not isinstance(prompt_father_level, int) or isinstance(prompt_father_level, bool):
+        raise TypeError("prompt_father_level must be None or an int")
+    level = tree["levels"].get(str(prompt_father_level))
+    if level is None:
+        raise ValueError(f"invalid prompt father level: {prompt_father_level}")
+    matches = [item for item in tree["classes"].values() if item["text"] == name]
+    if not matches:
+        raise KeyError(f"class name not found in WordNet tree: {name!r}")
+    representative = matches[0]["representatives"][prompt_father_level]
+    father = level["texts"][level["wnids"].index(representative)]
+    return f"a photo of {name}, which is one kind of {father}"
+
+
 class WordNetNouns:
     def __init__(self, root: Path):
         self.root = root
