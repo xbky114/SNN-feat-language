@@ -24,7 +24,7 @@ from pathlib import Path
 WNID_RE = re.compile(r"n\d{8}")
 
 
-def build_rompt(name: str, tree: dict, prompt_father_level: int | None = None) -> str:
+def build_prompt(name: str, tree: dict, prompt_father_level: int | None = None) -> str:
     """Build a CLIP prompt with an optional hierarchy representative."""
     if prompt_father_level is None:
         return f"a photo of {name}"
