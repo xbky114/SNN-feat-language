@@ -34,7 +34,7 @@ def convert(visual, plan, params, calibration_loader=None, thresholds=None):
     cls=IFRate if params.neuron=='IF' else MTHRate
     replaced = 0
     for t in plan.targets:
-        if t.kind not in ('relu','activation'): continue
+        if t.kind not in ('relu', 'activation', 'gelu'): continue
         parent, name=t.path.rsplit('.',1) if '.' in t.path else ('',t.path); holder=model.get_submodule(parent) if parent else model
         setattr(holder,name,cls(thresholds[t.path], params.num_thresholds) if cls is MTHRate else cls(thresholds[t.path]))
         replaced += 1
