@@ -33,10 +33,23 @@ def build_prompt(name: str, tree: dict, prompt_father_level: int | None = None) 
     level = tree["levels"].get(str(prompt_father_level))
     if level is None:
         raise ValueError(f"invalid prompt father level: {prompt_father_level}")
-    matches = [item for item in tree["classes"].values() if item["text"] == name]
+    matches = [
+        (wnid, index)
+        for level_data in tree["levels"].values()
+        for index, text in enumerate(level_data["texts"])
+        if text == name
+        for wnid in [level_data["wnids"][index]]
+    ]
     if not matches:
         raise KeyError(f"class name not found in WordNet tree: {name!r}")
-    representative = matches[0]["representatives"][prompt_father_level]
+    representative_wnid = matches[0][0]
+    owners = [
+        item for item in tree["classes"].values()
+        if representative_wnid in item["representatives"]
+    ]
+    if not owners:
+        raise KeyError(f"representative not found in leaf classes: {representative_wnid!r}")
+    representative = owners[0]["representatives"][prompt_father_level]
     father = level["texts"][level["wnids"].index(representative)]
     return f"a photo of {name}, which is one kind of {father}"
 
