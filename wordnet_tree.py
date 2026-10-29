@@ -24,6 +24,26 @@ from pathlib import Path
 WNID_RE = re.compile(r"n\d{8}")
 
 
+def get_level_along_path(path_length: int, num_bins: int, current_id: int) -> int:
+    """Return the binned level of a node on a root-to-leaf path.
+
+    ``current_id`` is the zero-based position in the full path (root is 0),
+    while ``path_length`` includes the root.  The non-root portion is split
+    into ``num_bins`` bins using the same ceiling rule as :func:`build`.
+    """
+    if not isinstance(path_length, int) or not isinstance(num_bins, int) \
+            or not isinstance(current_id, int):
+        raise TypeError("path_length, num_bins, and current_id must be ints")
+    if path_length < 2 or num_bins < 1:
+        raise ValueError("path_length must be >= 2 and num_bins must be >= 1")
+    if current_id < 0 or current_id >= path_length:
+        raise ValueError("current_id must be a valid path position")
+    if current_id == 0:
+        return 0
+    leaf_path_length = path_length - 1
+    return min(num_bins, (current_id * num_bins + leaf_path_length - 1) // leaf_path_length)
+
+
 def build_prompt(name: str, tree: dict, prompt_father_level: int | None = None) -> str:
     """Build a CLIP prompt with an optional hierarchy representative."""
     if prompt_father_level is None:

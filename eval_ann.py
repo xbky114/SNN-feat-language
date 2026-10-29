@@ -6,20 +6,34 @@ import json
 from pathlib import Path
 import torch
 from dataloader import imagenet_dataloader
+from wordnet_tree import build_prompt, get_level_along_path
 
-def class_text_features(model, class_names, device):
-    prompts = [f"a photo of a {name.replace('_', ' ')}" for name in class_names]
+def _node_prompt(tree, wnid, prompt_father):
+    level_data = next(data for data in tree["levels"].values() if wnid in data["wnids"])
+    name = level_data["texts"][level_data["wnids"].index(wnid)]
+    if not prompt_father:
+        return build_prompt(name, tree)
+    owner = next(item for item in tree["classes"].values()
+                 if wnid in item["representatives"])
+    position = owner["path"].index(name)
+    level = get_level_along_path(len(owner["path"]), tree["num_bins"], position)
+    return build_prompt(name, tree, level - 1 if level > 1 else None)
+
+
+def class_text_features(model, tree, wnids, device, prompt_father):
+    prompts = [_node_prompt(tree, wnid, prompt_father) for wnid in wnids]
     with torch.no_grad():
         text = model.encode_text(model.tokenize(prompts).to(device))
     return text / text.norm(dim=-1, keepdim=True)
 
 @torch.no_grad()
-def evaluate(model, loader, tree, device="cpu", print_interval=100, log=None):
+def evaluate(model, loader, tree, device="cpu", print_interval=100, log=None,
+             prompt_father=False):
     model.eval().to(device)
     bins = tree["num_bins"]
     level_keys = [str(k) for k in range(1, bins + 1)]
     levels = tree["levels"]
-    text = {k: class_text_features(model, levels[k]["texts"], device)
+    text = {k: class_text_features(model, tree, levels[k]["wnids"], device, prompt_father)
             for k in ["0"] + level_keys}
     index = {k: levels[k]["class_to_idx"] for k in levels}
     path_indices = torch.tensor([
@@ -65,11 +79,16 @@ def evaluate(model, loader, tree, device="cpu", print_interval=100, log=None):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--data", required=True); p.add_argument("--clip", required=True)
-    p.add_argument("--tree", required=True); p.add_argument("--output-dir", required=True)
-    p.add_argument("--batch-size", type=int, default=128); p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--data", required=True)
+    p.add_argument("--clip", required=True)
+    p.add_argument("--tree", required=True)
+    p.add_argument("--output-dir", required=True)
+    p.add_argument("--batch-size", type=int, default=128)
+    p.add_argument("--workers", type=int, default=4)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--print-interval", type=int, default=20)
+    p.add_argument("--prompt-father", action="store_true",
+                   help="append the representative from the preceding level to every prompt")
     a = p.parse_args()
     from CLIPs import get_clip
     out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True)
@@ -79,7 +98,8 @@ def main():
         tree = json.loads(Path(a.tree).read_text())
         evaluation = imagenet_dataloader(a.data, batch_size=a.batch_size,
                                          num_workers=a.workers, image_size=adapter.input_resolution)
-        summary, artifact = evaluate(adapter, evaluation, tree, a.device, a.print_interval, log)
+        summary, artifact = evaluate(adapter, evaluation, tree, a.device, a.print_interval, log,
+                                     a.prompt_father)
         torch.save(artifact, out / "logits.pt")
         (out / "metrics.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary, sort_keys=True), file=log, flush=True)
