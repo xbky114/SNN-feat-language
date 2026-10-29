@@ -16,6 +16,7 @@ from CLIPs import get_clip
 from clip_with_snn_visual import CLIPWithSNNVisual
 from dataloader import imagenet_dataloader
 from to_snn.prototype import SNNArtifact
+from wordnet_tree import build_prompt, get_level_along_path
 
 
 def _coding(name: str):
@@ -25,12 +26,21 @@ def _coding(name: str):
     return fn
 
 
-def _text_features(model, names, device):
-    prompts = [f"a photo of a {name.replace('_', ' ')}" for name in names]
-    tokens = model.tokenize(prompts).to(device)
-    with torch.no_grad():
-        out = model.encode_text(tokens)
-    return out / out.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+def _node_prompt(tree, wnid, prompt_father):
+    level_data = next(data for data in tree["levels"].values() if wnid in data["wnids"])
+    name = level_data["texts"][level_data["wnids"].index(wnid)]
+    if not prompt_father:
+        return build_prompt(name, tree)
+    owner = next(item for item in tree["classes"].values()
+                 if wnid in item["representatives"])
+    position = owner["path"].index(name)
+    level = get_level_along_path(len(owner["path"]), tree["num_bins"], position)
+    return build_prompt(name, tree, level - 1 if level > 1 else None)
+
+
+def _level_prompts(tree, level, prompt_father):
+    return [_node_prompt(tree, wnid, prompt_father)
+            for wnid in tree["levels"][level]["wnids"]]
 
 
 def _metric_line(batch, total, depth, correct, selected, levels):
@@ -41,7 +51,7 @@ def _metric_line(batch, total, depth, correct, selected, levels):
 
 @torch.no_grad()
 def evaluate(model, loader, tree, device, timesteps, images_per_file,
-             output_dir, print_interval, log=None):
+             output_dir, print_interval, log=None, prompt_father=False):
     model.eval().to(device)
     bins = int(tree["num_bins"])
     levels = [str(k) for k in range(1, bins + 1)]
@@ -73,8 +83,7 @@ def evaluate(model, loader, tree, device, timesteps, images_per_file,
         images, labels = images.to(device), labels.to(device)
         # One call per hierarchy level; each result is [T, batch, classes].
         logits = {k: model.calc_logits_through_time(
-            images, [f"a photo of a {name.replace('_', ' ')}"
-                     for name in level_names[k]["texts"]], timesteps)
+            images, _level_prompts(tree, k, prompt_father), timesteps)
             for k in ["0"] + levels}
         targets = paths[labels.cpu()]
         path = torch.stack([
@@ -123,6 +132,8 @@ def main():
     p.add_argument("--batch-size", type=int, default=32); p.add_argument("--workers", type=int, default=4)
     p.add_argument("--print-interval", type=int, default=20)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--prompt-father", action="store_true",
+                   help="append the preceding-level representative to every prompt")
     a = p.parse_args()
     if a.T <= 0 or a.images_per_file <= 0 or a.print_interval <= 0:
         p.error("--T, --images-per-file, and --print-interval must be positive")
@@ -137,7 +148,8 @@ def main():
         loader = imagenet_dataloader(a.data, batch_size=a.batch_size,
                                      num_workers=a.workers, image_size=model.input_resolution)
         summary = evaluate(model, loader, tree, a.device, a.T,
-                           a.images_per_file, out, a.print_interval, log)
+                           a.images_per_file, out, a.print_interval, log,
+                           a.prompt_father)
         print(f"final_summary={json.dumps(summary['final'], sort_keys=True)}", file=log, flush=True)
     (out / "metrics.json").write_text(json.dumps(summary, indent=2) + "\n")
 
