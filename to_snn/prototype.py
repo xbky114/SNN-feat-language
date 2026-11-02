@@ -15,6 +15,8 @@ class ConversionPlan:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 class SNNArtifact(nn.Module):
+    """Self-contained visual tower shared by conversion methods."""
+
     def reset_state(self):
         for m in self.modules():
             if m is not self and hasattr(m, 'reset_state'):
@@ -23,10 +25,22 @@ class SNNArtifact(nn.Module):
     def save(self, path):
         torch.save(self._checkpoint(), Path(path))
 
-    @classmethod
-    def load(cls, path, map_location='cpu'):
-        from .DCGS.converter import VisualSNNArtifact
-        return VisualSNNArtifact.load(path, map_location=map_location)
+    def __init__(self, model, conversion_params=None, conversion_plan=None):
+        super().__init__()
+        self.model = model
+        self.conversion_params = conversion_params
+        self.conversion_plan = conversion_plan
+
+    def forward(self, x):
+        return self.model(x)
 
     def _checkpoint(self):
-        return {'class': type(self).__module__ + '.' + type(self).__qualname__, 'state_dict': self.state_dict()}
+        return {'visual_model': self.model,
+                'conversion_params': self.conversion_params,
+                'conversion_plan': self.conversion_plan}
+
+    @classmethod
+    def load(cls, path, map_location='cpu'):
+        payload = torch.load(path, map_location=map_location, weights_only=False)
+        return cls(payload['visual_model'], payload.get('conversion_params'),
+                   payload.get('conversion_plan')).eval()

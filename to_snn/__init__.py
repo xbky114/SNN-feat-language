@@ -41,6 +41,11 @@ def load_conversion_params(path, method):
     return params_type(**values)
 
 def convert_clip(clip, conversion_method, params, dataloader=None, **kwargs):
+    """Return an artifact, or ``(artifact, optional JSON-serializable info)``.
+
+    The selected method owns its return value; the first item of a multiple
+    output result must always be an SNNArtifact.
+    """
     loaded = get_clip(clip, **kwargs)
     plan = loaded.conversion_plan()
     method = __import__(f'to_snn.{conversion_method}', fromlist=['convert'])
