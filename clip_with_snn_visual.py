@@ -16,6 +16,8 @@ class CLIPWithSNNVisual(CLIPAdapter):
             raise TypeError("clip must be a CLIPAdapter")
         if not isinstance(visual, SNNArtifact):
             raise TypeError("visual must be an SNNArtifact")
+        if not isinstance(coding, CODING):
+            raise TypeError("coding must be a CODING instance")
         self._clip = clip
         self._visual = visual
         self.coding = coding
@@ -62,19 +64,13 @@ class CLIPWithSNNVisual(CLIPAdapter):
         if T <= 0:
             raise ValueError("T must be positive")
         self.visual.reset_state()
-        backbone_features = []
-        for _ in range(T):
-            backbone_features.append(self.visual(img))
-        # The converted CNN backbone commonly emits fp32 while OpenAI CLIP's
-        # attention pool (especially on CUDA) may retain fp16 parameters.
-        # Match the pool's projection dtype before invoking it.
-        return torch.stack(
-            [
-                self.pool(self.coding(backbone_features[:t]).to(dtype=self.pool_dtype))
-                for t in range(1, T + 1)
-            ],
-            dim=0,
-        )
+        coded = None
+        image_features = []
+        for t in range(1, T + 1):
+            coded = self.coding.update(coded, self.visual(img), t)
+            # Keep the encoder's state precision; cast only the pool input.
+            image_features.append(self.pool(coded.to(dtype=self.pool_dtype)))
+        return torch.stack(image_features, dim=0)
 
     def forward(self, img_feat, text_feat):
         image_features = img_feat / img_feat.norm(dim=-1, keepdim=True)
@@ -83,9 +79,13 @@ class CLIPWithSNNVisual(CLIPAdapter):
 
     def calc_logits_through_time(self, img, texts, T):
         image_features = self.encode_image(img, T)
-        text_features = self.encode_text(self.tokenize(texts).to(img.device))
+        return self.calc_logits_from_image_features(image_features, texts)
+
+    def calc_logits_from_image_features(self, image_features, texts):
+        """Score texts against reusable image features shaped [T, batch, dim]."""
+        text_features = self.encode_text(self.tokenize(texts).to(image_features.device))
         return torch.stack(
-            [self(image_features[t], text_features) for t in range(T)],
+            [self(features, text_features) for features in image_features],
             dim=0,
         )
 
