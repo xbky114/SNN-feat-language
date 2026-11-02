@@ -16,14 +16,15 @@ from CLIPs import get_clip
 from clip_with_snn_visual import CLIPWithSNNVisual
 from dataloader import imagenet_dataloader
 from to_snn.prototype import SNNArtifact
+from to_snn.coding import CODING
 from wordnet_tree import build_prompt, get_level_along_path
 
 
 def _coding(name: str):
-    fn = getattr(importlib.import_module("to_snn.coding"), name, None)
-    if fn is None or not callable(fn):
-        raise ValueError(f"unknown coding function: {name!r}")
-    return fn
+    coding = getattr(importlib.import_module("to_snn.coding"), name, None)
+    if not isinstance(coding, CODING):
+        raise ValueError(f"unknown coding instance: {name!r}")
+    return coding
 
 
 def _node_prompt(tree, wnid, prompt_father):
@@ -81,9 +82,10 @@ def evaluate(model, loader, tree, device, timesteps, images_per_file,
 
     for batch_no, (images, labels) in enumerate(loader, 1):
         images, labels = images.to(device), labels.to(device)
-        # One call per hierarchy level; each result is [T, batch, classes].
-        logits = {k: model.calc_logits_through_time(
-            images, _level_prompts(tree, k, prompt_father), timesteps)
+        # All hierarchy levels share the same visual trajectory.
+        image_features = model.encode_image(images, timesteps)
+        logits = {k: model.calc_logits_from_image_features(
+            image_features, _level_prompts(tree, k, prompt_father))
             for k in ["0"] + levels}
         targets = paths[labels.cpu()]
         path = torch.stack([
