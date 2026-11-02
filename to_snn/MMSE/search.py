@@ -4,7 +4,7 @@ import time
 
 import torch
 
-from .neurons import IFRate, MTHRate
+from to_snn.neurons import IF, MTH
 
 
 def _prefetch(paths):
@@ -85,8 +85,8 @@ def search(paths, maximum, params, device, *, candidate_batch_size=16,
         values = candidates[start:start + group_size]
         # Python scalar thresholds in the original search use the default dtype.
         threshold = torch.tensor(values, device=device).reshape(-1, 1)
-        neuron = (IFRate(threshold) if params.neuron == "IF"
-                  else MTHRate(threshold, params.num_thresholds)).eval()
+        neuron = (IF(threshold) if params.neuron == "IF"
+                  else MTH(threshold, params.num_thresholds)).eval()
         groups.append((start, len(values), neuron, threshold == 0))
     count = 0
     last_report = time.monotonic()

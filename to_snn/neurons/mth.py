@@ -1,17 +1,25 @@
 import torch
 from torch import nn
 
+try:
+    import triton
+except ImportError:
+    _fused_step = None
+else:
+    from ._mth_triton import step as _fused_step
 
-class MTHRate(nn.Module):
+
+class MTH(nn.Module):
     """Input-dtype single-step dynamics based on ``relu_neuron.MTH_with_neg``.
 
     Negative spikes can retract earlier positive output, but cannot make
     cumulative output negative. This is not the ``MTH_diff`` state update.
     """
-    def __init__(self, threshold=1.0, num_thresholds=8):
+    def __init__(self, threshold=1.0, num_thresholds=8, *, fused=True):
         super().__init__()
         self.register_buffer("threshold", torch.as_tensor(threshold).detach().clone())
         self.num_thresholds = num_thresholds
+        self.fused = fused
         self.T = 0
         self.mem = None
         self.thre_shaped = None
@@ -31,6 +39,11 @@ class MTHRate(nn.Module):
             self.mem = torch.zeros_like(x)
             self.thre_shaped = self._levels(x)
             self.cumulative_out = torch.zeros_like(x)
+        if self._can_fuse(x):
+            spike, self.mem, self.cumulative_out = _fused_step(
+                x, self.mem, self.cumulative_out, self.thre_shaped)
+            self.T += 1
+            return spike
         self.mem = self.mem + x
         positive = (self.mem.unsqueeze(0) >= self.thre_shaped * 0.75).to(dtype=x.dtype)
         negative = ((self.mem.unsqueeze(0) <= -self.thre_shaped * 0.75).to(dtype=x.dtype)
@@ -46,6 +59,16 @@ class MTHRate(nn.Module):
         self.cumulative_out = self.cumulative_out + spike
         self.T += 1
         return spike
+
+    def _can_fuse(self, x):
+        return (self.fused and _fused_step is not None and x.is_cuda
+                and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                and x.numel() > 0 and x.ndim <= 4 and 1 <= self.num_thresholds <= 8
+                and x.is_contiguous() and self.mem.is_contiguous()
+                and self.cumulative_out.is_contiguous()
+                and not (torch.is_grad_enabled() and any(
+                    value.requires_grad for value in
+                    (x, self.mem, self.cumulative_out, self.thre_shaped))))
 
     def reset_state(self):
         self.T = 0

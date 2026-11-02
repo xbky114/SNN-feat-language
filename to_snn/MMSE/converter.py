@@ -12,7 +12,7 @@ from torch import nn
 
 from to_snn.prototype import SNNArtifact
 from to_snn.validation import reject_unsupported_modules
-from .neurons import IFRate, MTHRate
+from to_snn.neurons import IF, MTH
 from .config import MMSEConversionParams
 from .search import search as _search
 
@@ -32,8 +32,8 @@ def _neuron(threshold, params):
     if threshold == 0:
         return ZeroOutput()
     if params.neuron == "IF":
-        return IFRate(threshold)
-    return MTHRate(threshold, params.num_thresholds)
+        return IF(threshold)
+    return MTH(threshold, params.num_thresholds)
 
 
 def _validate_plan(model, plan):

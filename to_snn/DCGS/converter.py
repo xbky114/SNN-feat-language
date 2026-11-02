@@ -3,8 +3,7 @@ import copy
 import torch
 from torch import nn
 
-from .neurons.if_rate import IFRate
-from .neurons.mth_rate import MTHRate
+from to_snn.neurons import IF, MTH
 from .threshold import (CalibrationStatistics, collect_statistics,
                         normalize_mode, thresholds_from_statistics)
 from to_snn.prototype import SNNArtifact
@@ -64,8 +63,8 @@ def convert(visual, plan, params, calibration_loader=None, thresholds=None, *, s
         # Same boundary policy as upstream replacement: negatives -> zero,
         # zero remains zero. Never invent a positive epsilon threshold.
         threshold = threshold * (threshold >= 0).float()
-        neuron = (IFRate(threshold) if params.neuron == 'IF'
-                  else MTHRate(threshold, params.num_thresholds))
+        neuron = (IF(threshold) if params.neuron == 'IF'
+                  else MTH(threshold, params.num_thresholds))
         parent, _, name = target.path.rpartition('.')
         holder = model.get_submodule(parent) if parent else model
         setattr(holder, name, neuron.to(state.device).eval())
