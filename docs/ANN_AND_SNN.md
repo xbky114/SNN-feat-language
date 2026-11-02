@@ -77,6 +77,28 @@ artifact = convert_clip(
 `to_be_converted`, and dispatches to the selected method. The text tower is
 never passed to conversion.
 
+DCGS and MMSE reject registered MaxPool (including adaptive/fractional),
+LayerNorm, GELU, Softmax and attention modules before calibration, including
+the custom QuickGELU/AttentionPool classes used by CLIP.
+
+```python
+from to_snn.DCGS import collect_statistics, save_statistics, load_statistics, convert
+
+statistics = collect_statistics(
+    clip.visual, calibration_loader, clip.conversion_plan().targets,
+    mode="var", level="channel",
+)
+save_statistics(statistics, "calibration/rn50_var_channel")
+statistics = load_statistics("calibration/rn50_var_channel")
+artifact = convert(clip.visual, clip.conversion_plan(), params, statistics=statistics)
+```
+
+Methods may return either an `SNNArtifact` or `(artifact, info)`. The first
+output must be an `SNNArtifact`; optional `info` is JSON-serializable data
+(or `None`). `get_snn.py` saves the artifact to the requested `.pt` path and,
+when info is present, saves it to a sibling file with the same stem and a
+`.json` extension. 
+
 
 ## Artifact lifecycle
 
