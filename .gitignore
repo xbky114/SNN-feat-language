@@ -227,6 +227,7 @@ utils/
 data/
 results/
 weights/
+tests/
 
 # output
 *.pt
