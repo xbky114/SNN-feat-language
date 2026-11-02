@@ -17,10 +17,7 @@ class CLIPWithSNNVisual(CLIPAdapter):
         if not isinstance(visual, SNNArtifact):
             raise TypeError("visual must be an SNNArtifact")
         self._clip = clip
-        # MTH emits float32 spikes even for half inputs (reference dynamics).
-        # Keep downstream backbone convolutions compatible, including those
-        # restored from existing fp16 artifacts. Leave ANN towers untouched.
-        self._visual = visual.float()
+        self._visual = visual
         self.coding = coding
 
     @property
@@ -65,7 +62,6 @@ class CLIPWithSNNVisual(CLIPAdapter):
         if T <= 0:
             raise ValueError("T must be positive")
         self.visual.reset_state()
-        img = img.float()
         backbone_features = []
         for _ in range(T):
             backbone_features.append(self.visual(img))
