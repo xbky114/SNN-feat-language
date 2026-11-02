@@ -64,4 +64,22 @@ def rate_coding(
     return temporal.mean(dim=0)
 
 
-__all__ = ["CODING", "rate_coding"]
+def differential_coding(
+    spikes: torch.Tensor | Sequence[torch.Tensor],
+    time_dimention: int = 0,
+    **kwargs: Any,
+) -> torch.Tensor:
+    """Return the sum of spikes weighted by inverse one-based timestep.
+
+    For ``S`` with ``T`` timesteps this returns ``sum(S[t - 1] / t)``
+    for ``t`` from 1 to ``T``. Tensor inputs may place time on any axis;
+    sequence inputs use sequence order and ignore ``time_dimention``.
+    """
+    del kwargs
+    temporal, timesteps = _as_time_tensor(spikes, time_dimention)
+    divisors = torch.arange(1, timesteps + 1, device=temporal.device)
+    divisors = divisors.reshape((timesteps,) + (1,) * (temporal.ndim - 1))
+    return (temporal / divisors).sum(dim=0)
+
+
+__all__ = ["CODING", "rate_coding", "differential_coding"]
