@@ -6,9 +6,11 @@ and Triton 2.1.0.
 
 ## Current implementation and improvement summary
 
-MMSE now uses the independent `mth_const_in` operator for constant-input MTH
-search. It runs all time steps inside a GPU kernel. The bundled configuration
-uses 1,048,576 activations per CUDA block and two concurrent layer searches.
+MMSE now makes two streaming ANN passes without activation-cache files: first
+per-layer maxima, then candidate SSE accumulation directly on GPU. The independent
+`mth_const_in` operator runs all time steps inside a kernel. CUDA chunks remain
+1,048,576 activations for the bundled configuration. Layers are searched in ANN
+forward order on the same stream, without worker threads or activation copies.
 The converted model continues to use ordinary `MTH` for image inference.
 
 | Stage | Change | Measured effect |
@@ -16,6 +18,7 @@ The converted model continues to use ordinary `MTH` for image inference.
 | 1 | Materialize candidate inputs once to enable single-step MTH fusion | 2.08x on 65,536 activations at the original chunk size |
 | 2 | Enlarge CUDA chunks from 8,192 to 1,048,576 and tune layer concurrency | Fusion plus larger chunks: 53.540 s to 0.390 s on 1,048,576 activations; two workers selected |
 | 3 | Fuse time steps and decoding in `mth_const_in` | Further 11.4x: 7.209 s to 0.630 s on 8,388,608 activations; tensor peak 556 to 300 MiB |
+| 4 | Two streaming ANN passes | Eliminates full-dataset activation storage and activation CPU/GPU transfers; adds one ANN pass |
 
 These are separate controlled search experiments with different sample sizes
 and timing sessions. Their speedups must not be multiplied into a claimed
@@ -278,7 +281,58 @@ conda run -n llava python tests/benchmark_mth_const_in.py \
     --elements 8388608
 ```
 
-## Reading MMSE progress
+## Stage 4: two-pass streaming calibration
+
+The first pass reduces pre-ReLU activations to per-layer maxima and finite-value
+flags on GPU. Scalars are transferred only after the pass, rather than forcing
+a CPU synchronization at every hook. Candidate thresholds are then fixed.
+
+The second pass runs the original ANN again. Each pre-ReLU hook splits its
+current activation into bounded blocks and updates a `CandidateSearch` SSE
+accumulator using temporal fusion and FP64 error reduction. It does not save,
+load, clone or transfer activations to CPU. Same-stream execution ensures the
+search consumes inputs before inplace ReLU overwrites them. Only image transfers
+and final statistics cross devices. All thresholds are selected before any
+ReLU is replaced, so downstream calibration still sees ANN activations.
+
+The old disk `search` utility remains available for reference tests and saved
+cache analysis, sharing the same accumulator. Conversion never invokes it.
+`layer_workers` is retained as a validated API option but has no concurrency
+effect in streaming mode; no thread pool or pending layer activation queue is
+created. `candidate_batch_size` and `chunk_size` still bound temporary memory.
+The script no longer needs TMPDIR. Old cache directories are not automatically
+removed because another process may still be using them.
+
+The loader must be reiterable and use identical samples with deterministic
+preprocessing in both passes. One-shot iterators are rejected, and sample and
+per-layer activation counts are checked between passes. Count checks cannot
+detect different images with identical shapes; the caller must ensure replay
+consistency. The bundled deterministic ImageNet loader meets this requirement.
+Nonfinite inputs are checked in both passes, including inactive layers.
+
+Tests compare against saved-activation reference searches, including inplace
+ReLUs, and forbid `torch.save`/`torch.load` during conversion. They check that the
+original ANN remains unchanged, the loader can be replayed and empty inputs
+fail. Complete conversion speedup has not been measured; earlier timing tables
+refer to the historical search implementations, not this two-pass pipeline.
+
+## Current streaming progress
+
+```text
+[MMSE] pass=1/2 batches=10/391 samples=1280
+[MMSE] pass=2/2 batches=10/391 samples=1280
+```
+
+Pass 1 reports maximum-statistics collection. Pass 2 reports completed image
+batches: every target layer and every candidate has been evaluated for those
+images. With 50,000 images and batch size 128 there are 391 batches per pass;
+with 2,000 images there are 16. Each pass starts its own sample counter.
+Reports occur after the first batch, every ten batches and the final batch,
+with GPU synchronization so reported work is complete. A batch can take much
+longer in pass 2. After pass 2, each layer's chosen threshold and MSE is printed.
+There is no longer a `candidates completed=0` counter during streaming conversion.
+
+## Historical disk-search progress
 
 MMSE first caches ANN preactivations, then searches a threshold independently
 for each ReLU layer. `cached calibration batch N` counts image batches during
