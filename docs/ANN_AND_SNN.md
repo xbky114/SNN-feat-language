@@ -114,3 +114,38 @@ the `ConversionPlan`. The converted model contains neuron modules and their
 registered threshold buffers, so loading does not require the original ANN,
 calibration dataloader, or threshold cache. The ANN text tower is retained by
 the caller when semantic CLIP image/text evaluation is needed.
+
+## Temporal coding
+
+`to_snn.coding.CODING` is an abstract base class with two methods:
+
+- `accumulate(spikes, time_dimention=0)` encodes a complete history. A tensor
+  may put time on the selected axis; a sequence always puts time on axis zero.
+- `update(previous, spike, t)` returns the coded value through one-based
+  timestep `t`. Start with `previous=None, t=1`, then pass each returned value
+  into the next call. Implementations must not mutate inputs or retain
+  sequence state on the encoder.
+
+`RateCoding` uses `previous + (spike - previous) / t`;
+`DifferentialCoding` uses `previous + spike / t`. Both return the first spike
+at `t=1`, promoted to FP32 for FP16/BF16 inputs. Streaming state remains FP32
+for those inputs; FP64 inputs retain FP64. Full-history `accumulate` retains
+its existing reduction behavior. Different reduction orders and precision
+mean streaming and full-history results need not be bitwise identical.
+
+The existing names `rate_coding` and `differential_coding` are stateless
+instances, and calling them directly still delegates to `accumulate`.
+
+## Shared neuron library
+
+`to_snn.neurons` owns the neuron implementations used by both DCGS and MMSE:
+
+```python
+from to_snn.neurons import IF, MTH
+
+if_neuron = IF(threshold=1.0)
+mth_neuron = MTH(threshold=1.0, num_thresholds=4)
+```
+
+Both classes expose single-step `forward(x)` and `reset_state()`. Conversion
+and MMSE threshold search use these same classes.
