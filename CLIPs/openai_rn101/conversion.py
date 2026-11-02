@@ -1,3 +1,5 @@
+import copy
+
 from CLIPs import CLIPAdapter
 from torch import nn
 from to_snn.prototype import ConversionPlan, ConversionTarget
@@ -6,7 +8,11 @@ class CNNBackbone(nn.Module):
     """RN101 convolutional tower ending before attention pooling."""
     def __init__(self, visual):
         super().__init__()
-        self.source = visual
+        # Keep the ANN attention pool outside the converted module tree.
+        # Copy only the container: backbone weights remain shared with ANN.
+        self.source = copy.copy(visual)
+        self.source._modules = {name: module for name, module in visual._modules.items()
+                                if name != 'attnpool'}
 
     def forward(self, x):
         return self.source.forward_backbone(x)
