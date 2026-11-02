@@ -1,9 +1,38 @@
 """Convert a CLIP visual tower to an SNN artifact."""
 from __future__ import annotations
 import argparse
+import json
 from pathlib import Path
 from dataloader import calibration_dataloader
 from to_snn import convert_clip, load_conversion_params
+from to_snn.prototype import SNNArtifact
+
+
+def save_conversion_result(result, output):
+    """Save a single artifact or an artifact accompanied by optional info."""
+    info = None
+    if isinstance(result, (tuple, list)):
+        if len(result) not in (1, 2):
+            raise ValueError("conversion must return artifact or (artifact, info)")
+        artifact = result[0]
+        if len(result) == 2:
+            info = result[1]
+    else:
+        artifact = result
+    if not isinstance(artifact, SNNArtifact):
+        raise TypeError("the first conversion output must be an SNNArtifact")
+    # Validate info before writing either output; reject NaN/Inf JSON values.
+    encoded = json.dumps(info, indent=2, allow_nan=False) if info is not None else None
+    output = Path(output)
+    info_path = output.with_suffix(".json")
+    if encoded is not None and info_path == output:
+        raise ValueError("artifact output must not use the .json suffix")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    artifact.cpu().eval().save(output)
+    print(f"saved {output.resolve()}")
+    if encoded is not None:
+        info_path.write_text(encoded + "\n", encoding="utf-8")
+        print(f"saved {info_path.resolve()}")
 
 def main():
     p = argparse.ArgumentParser(description="Convert an OpenAI CLIP visual tower to SNN")
@@ -17,20 +46,19 @@ def main():
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--device", default="cpu", help="Device used to load and convert the ANN")
     a = p.parse_args()
+    params = load_conversion_params(a.params, a.meth)
     # The bundled RN50 preprocessing uses 224px inputs.  convert_clip loads
     # the requested adapter and dispatches the requested conversion method.
     calibration = calibration_dataloader(a.data, batch_size=a.batch_size,
                                          calibration_size=a.calibration_size,
                                          image_size=224,
                                          num_workers=a.workers)
-    params = load_conversion_params(a.params, a.meth)
     # Reuse the public factory API; it loads the named adapter and dispatches
     # the requested conversion method.  The already-created calibration loader
     # is image-only by construction.
-    artifact = convert_clip(a.clip, a.meth, params, dataloader=calibration,
-                            device=a.device)
-    artifact.cpu().eval().save(a.output)
-    print(f"saved {Path(a.output).resolve()}")
+    result = convert_clip(a.clip, a.meth, params, dataloader=calibration,
+                          device=a.device)
+    save_conversion_result(result, a.output)
 
 if __name__ == "__main__":
     main()
