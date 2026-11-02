@@ -127,8 +127,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True); p.add_argument("--clip", required=True)
     p.add_argument("--snn", required=True); p.add_argument("--tree", required=True)
-    p.add_argument("--output-dir", required=True); p.add_argument("--coding", default="rate_coding")
-    p.add_argument("--T", type=int, default=256); p.add_argument("--images-per-file", type=int, default=256)
+    p.add_argument("--output-dir", required=True); p.add_argument("--coding", required=True)
+    p.add_argument("--T", type=int, required=True); p.add_argument("--images-per-file", type=int, default=256)
     p.add_argument("--batch-size", type=int, default=32); p.add_argument("--workers", type=int, default=4)
     p.add_argument("--print-interval", type=int, default=20)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -137,13 +137,14 @@ def main():
     a = p.parse_args()
     if a.T <= 0 or a.images_per_file <= 0 or a.print_interval <= 0:
         p.error("--T, --images-per-file, and --print-interval must be positive")
+    coding = _coding(a.coding)
     out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True)
     log_path = out / "evaluation.log"
     with log_path.open("w") as log:
         print(f"arguments={json.dumps(vars(a), sort_keys=True)}", file=log, flush=True)
         ann = get_clip(a.clip, device=a.device)
         snn = SNNArtifact.load(a.snn, map_location=a.device)
-        model = CLIPWithSNNVisual(ann, snn, _coding(a.coding))
+        model = CLIPWithSNNVisual(ann, snn, coding)
         tree = json.loads(Path(a.tree).read_text())
         loader = imagenet_dataloader(a.data, batch_size=a.batch_size,
                                      num_workers=a.workers, image_size=model.input_resolution)
