@@ -3,7 +3,7 @@ from torch import nn
 
 
 class MTHRate(nn.Module):
-    """Single-step inference equivalent of ``relu_neuron.MTH_with_neg``.
+    """Input-dtype single-step dynamics based on ``relu_neuron.MTH_with_neg``.
 
     Negative spikes can retract earlier positive output, but cannot make
     cumulative output negative. This is not the ``MTH_diff`` state update.
@@ -18,7 +18,7 @@ class MTHRate(nn.Module):
         self.cumulative_out = None
 
     def _levels(self, x):
-        th = self.threshold.to(device=x.device)
+        th = self.threshold.to(device=x.device, dtype=x.dtype)
         if th.ndim == 1 and x.ndim >= 2 and th.numel() == x.shape[1]:
             th = th.reshape(1, -1, *([1] * (x.ndim - 2)))
         factors = 2 ** torch.arange(self.num_thresholds, device=x.device)
@@ -26,14 +26,15 @@ class MTHRate(nn.Module):
         return th.unsqueeze(0) / factors
 
     def forward(self, x):
-        if self.T == 0 or self.mem is None or self.mem.shape != x.shape:
+        if (self.T == 0 or self.mem is None or self.mem.shape != x.shape
+                or self.mem.dtype != x.dtype or self.mem.device != x.device):
             self.mem = torch.zeros_like(x)
             self.thre_shaped = self._levels(x)
             self.cumulative_out = torch.zeros_like(x)
         self.mem = self.mem + x
-        positive = (self.mem.unsqueeze(0) >= self.thre_shaped * 0.75).float()
-        negative = ((self.mem.unsqueeze(0) <= -self.thre_shaped * 0.75).float()
-                    * (self.cumulative_out.unsqueeze(0) >= self.thre_shaped).float())
+        positive = (self.mem.unsqueeze(0) >= self.thre_shaped * 0.75).to(dtype=x.dtype)
+        negative = ((self.mem.unsqueeze(0) <= -self.thre_shaped * 0.75).to(dtype=x.dtype)
+                    * (self.cumulative_out.unsqueeze(0) >= self.thre_shaped).to(dtype=x.dtype))
         selected_positive = positive.clone()
         selected_negative = negative.clone()
         if self.num_thresholds > 1:
