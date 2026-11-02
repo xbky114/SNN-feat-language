@@ -4,7 +4,7 @@ import time
 
 import torch
 
-from to_snn.neurons import IF, MTH
+from to_snn.neurons import IF, MTH, mth_const_in
 
 
 def _prefetch(paths):
@@ -75,10 +75,16 @@ def search(paths, maximum, params, device, *, candidate_batch_size=16,
     candidates = torch.linspace(maximum * params.search_start, maximum,
                                 params.search_num, dtype=torch.float64).tolist()
     group_size = min(candidate_batch_size, len(candidates))
-    # Bound the expanded candidate x threshold-level intermediates. Time does
-    # not enter this bound because decoding consumes each spike immediately.
+    # CUDA uses larger blocks to amortize per-step dispatch. With 16 candidates
+    # and four thresholds this gives 1,048,576 activations. Keep this budget
+    # for the single-step fallback too; temporal MTH fusion uses less memory.
+    # Keep the conservative CPU budget and scale both
+    # budgets down with candidate/threshold counts for the eager fallback.
+    # Time does not enter the bound because each spike is decoded immediately.
     if chunk_size is None:
-        chunk_size = max(1, 4_194_304 // (group_size * max(8, 8 * params.num_thresholds)))
+        workspace_elements = 536_870_912 if device.type == "cuda" else 4_194_304
+        chunk_size = max(1, workspace_elements //
+                         (group_size * max(8, 8 * params.num_thresholds)))
     errors = torch.zeros(len(candidates), dtype=torch.float64, device=device)
     groups = []
     for start in range(0, len(candidates), group_size):
@@ -94,22 +100,29 @@ def search(paths, maximum, params, device, *, candidate_batch_size=16,
         reference = h.relu().double()
         count += h.numel()
         for start, size, neuron, zero in groups:
-            neuron.reset_state()
-            inputs = h.unsqueeze(0).expand(size, -1)
-            accumulated = None
-            # Accumulate low-precision outputs in float32, like torch's
-            # reduction kernels, and cast once at the decoder boundary.
-            output_dtype = None
-            for t in range(1, params.time_steps + 1):
-                spike = neuron(inputs).masked_fill(zero, 0)
-                output_dtype = spike.dtype
-                term = spike / t if params.coding == "differential_coding" else spike
-                if term.dtype in (torch.float16, torch.bfloat16):
-                    term = term.float()
-                accumulated = term if accumulated is None else accumulated + term
-            if params.coding == "rate_coding":
-                accumulated = accumulated / params.time_steps
-            output = accumulated.to(output_dtype)
+            if params.neuron == "MTH":
+                output = mth_const_in(h, neuron.threshold, params.time_steps,
+                                      params.num_thresholds, params.coding)
+            else:
+                neuron.reset_state()
+                inputs = h.unsqueeze(0).expand(size, -1)
+                if inputs.is_cuda:
+                    # Reuse the materialized candidate input over all steps.
+                    inputs = inputs.contiguous()
+                accumulated = None
+                # Accumulate low-precision outputs in float32, like torch's
+                # reduction kernels, and cast once at the decoder boundary.
+                output_dtype = None
+                for t in range(1, params.time_steps + 1):
+                    spike = neuron(inputs).masked_fill(zero, 0)
+                    output_dtype = spike.dtype
+                    term = spike / t if params.coding == "differential_coding" else spike
+                    if term.dtype in (torch.float16, torch.bfloat16):
+                        term = term.float()
+                    accumulated = term if accumulated is None else accumulated + term
+                if params.coding == "rate_coding":
+                    accumulated = accumulated / params.time_steps
+                output = accumulated.to(output_dtype)
             errors[start:start + size] += (output.double() - reference).square().sum(dim=1)
             neuron.reset_state()
             if is_last and progress is not None:

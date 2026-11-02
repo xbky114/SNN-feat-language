@@ -93,14 +93,15 @@ def _cache_preactivations(model, plan, loader, directory, device):
 
 
 @torch.no_grad()
-def convert(visual, plan, params, calibration_loader=None, *, layer_workers=4,
+def convert(visual, plan, params, calibration_loader=None, *, layer_workers=2,
             candidate_batch_size=16, chunk_size=None):
     """Return ``(SNNArtifact, JSON-serializable search info)``.
 
     Calibration runs once, in eval mode, on an isolated ANN copy. Temporary
     activation files are removed on both success and failure. Only planned
     module-based ReLUs are supported; the plan must expose all such layers.
-    layer_workers bounds concurrent searches; candidate_batch_size batches
+    layer_workers bounds concurrent searches (two by default); use one for
+    serial layer search. candidate_batch_size batches
     independent thresholds. chunk_size optionally overrides the activation
     block size. These controls do not change calibration/search parameters.
     """
