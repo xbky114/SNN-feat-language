@@ -1,108 +1,26 @@
-"""Zero-shot ImageNet evaluation with reusable logits and metric artifacts."""
-from __future__ import annotations
-import argparse
-import contextlib
-import json
+"""Evaluate ANN CLIP on the fixed three-level hierarchy."""
+import argparse,json
 from pathlib import Path
 import torch
-from dataloader import imagenet_dataloader
-from wordnet_tree import build_prompt, get_level_along_path
+from dataloader import build_dataloader
+from prompt import build_prompt
+from CLIPs import get_clip
 
-def _node_prompt(tree, wnid, prompt_father):
-    level_data = next(data for data in tree["levels"].values() if wnid in data["wnids"])
-    name = level_data["texts"][level_data["wnids"].index(wnid)]
-    if not prompt_father:
-        return build_prompt(name, tree)
-    owner = next(item for item in tree["classes"].values()
-                 if wnid in item["representatives"])
-    position = owner["path"].index(name)
-    level = get_level_along_path(len(owner["path"]), tree["num_bins"], position)
-    return build_prompt(name, tree, level - 1 if level > 1 else None)
-
-
-def class_text_features(model, tree, wnids, device, prompt_father):
-    prompts = [_node_prompt(tree, wnid, prompt_father) for wnid in wnids]
-    with torch.no_grad():
-        text = model.encode_text(model.tokenize(prompts).to(device))
-    return text / text.norm(dim=-1, keepdim=True)
-
-@torch.no_grad()
-def evaluate(model, loader, tree, device="cpu", print_interval=100, log=None,
-             prompt_father=False):
-    model.eval().to(device)
-    bins = tree["num_bins"]
-    level_keys = [str(k) for k in range(1, bins + 1)]
-    levels = tree["levels"]
-    text = {k: class_text_features(model, tree, levels[k]["wnids"], device, prompt_father)
-            for k in ["0"] + level_keys}
-    index = {k: levels[k]["class_to_idx"] for k in levels}
-    path_indices = torch.tensor([
-        [index[str(k)][tree["classes"][wnid]["representatives"][k]]
-         for k in range(bins + 1)] for wnid in loader.dataset.classes], dtype=torch.long)
-    correct = {k: 0 for k in level_keys}
-    selected = {k: 0 for k in level_keys}
-    depth_sum = total = 0
-    full_logits, path_logits, saved_labels = [], [], []
-    scale = model.logit_scale.exp()
-    for batch_no, (images, labels) in enumerate(loader, 1):
-        images, labels = images.to(device), labels.to(device)
-        features = model.encode_image(images)
-        features = features / features.norm(dim=-1, keepdim=True)
-        logits = {k: scale * features @ text[k].T for k in ["0"] + level_keys}
-        targets = path_indices[labels.cpu()]
-        path = torch.stack([logits[str(k)].gather(1, targets[:, k:k + 1].to(device)).squeeze(1)
-                            for k in range(bins + 1)], dim=1)
-        depth_sum += (path.softmax(1) * (torch.arange(bins + 1, device=device) / bins)).sum().item()
-        for k in level_keys:
-            correct[k] += (logits[k].argmax(1) == targets[:, int(k)].to(device)).sum().item()
-            selected[k] += (path.argmax(1) == int(k)).sum().item()
-        total += labels.numel()
-        full_logits.append(torch.cat([logits[k].cpu() for k in ["0"] + level_keys], 1))
-        path_logits.append(path.cpu()); saved_labels.append(labels.cpu())
-        if log and batch_no % print_interval == 0:
-            print(f"batch={batch_no} samples={total} semantic_depth={depth_sum / total:.6f} "
-                  f"accuracy={json.dumps({k: correct[k] / total for k in level_keys})} "
-                  f"selectivity={json.dumps({k: selected[k] / total for k in level_keys})}",
-                  file=log, flush=True)
-    summary = {"samples": total, "semantic_depth": depth_sum / total,
-               "accuracy": {k: correct[k] / total for k in level_keys},
-               "selectivity": {k: selected[k] / total for k in level_keys}}
-    # Split the concatenated level logits into independently addressable tensors.
-    widths = [levels[k]["num_classes"] for k in ["0"] + level_keys]
-    merged = torch.cat(full_logits)
-    artifact = {"path_logits": torch.cat(path_logits)}
-    start = widths[0]  # level 0 has one class and is retained only in path_logits
-    for key, width in zip(level_keys, widths[1:]):
-        artifact[f"logits_{key}"] = merged[:, start:start + width]
-        start += width
-    return summary, artifact
-
+def evaluate(model, loader, device="cpu", prompt_father=False):
+    ds=loader.dataset; names=ds.class_names; levels=list(names)
+    idx={k:{n:i for i,n in enumerate(names[k])} for k in levels}
+    prompts={"basic":[build_prompt(n) for n in names["basic"]],"subordinate":[build_prompt(n,ds.parent["subordinate"][n]) if prompt_father else build_prompt(n) for n in names["subordinate"]],"fine_grained":[build_prompt(n,ds.parent["fine_grained"][n]) if prompt_father else build_prompt(n) for n in names["fine_grained"]]}
+    text={k:model.encode_text(model.tokenize(prompts[k]).to(device)) for k in levels}; text={k:v/v.norm(dim=-1,keepdim=True) for k,v in text.items()}
+    correct={k:0 for k in levels}; selected={k:0 for k in levels}; depth=total=0; saved={k:[] for k in levels}; paths=[]
+    for batch in loader:
+        x=batch['image'].to(device); b=x.shape[0]; feat=model.encode_image(x); feat=feat/feat.norm(dim=-1,keepdim=True)
+        logits={k:model.logit_scale.exp()*feat@text[k].T for k in levels}; target={k:torch.tensor([idx[k][v] for v in batch[k]],device=device) for k in levels}
+        path=torch.stack([logits[k][torch.arange(b,device=device),target[k]] for k in levels],1); p=path.softmax(1)
+        paths.append(path.cpu()); [saved[k].append(logits[k].cpu()) for k in levels]
+        depth+=(p*torch.tensor([0.,.5,1.],device=device)).sum(1).sum().item()
+        for i,k in enumerate(levels): correct[k]+=(logits[k].argmax(1)==target[k]).sum().item(); selected[k]+=(path.argmax(1)==i).sum().item()
+        total+=b
+    return {'samples':total,'semantic_depth':depth/total,'accuracy':{k:correct[k]/total for k in levels},'selectivity':{k:selected[k]/total for k in levels},'_logits':{k:torch.cat(saved[k]) for k in levels},'_path_logits':torch.cat(paths)}
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--data", required=True)
-    p.add_argument("--clip", required=True)
-    p.add_argument("--tree", required=True)
-    p.add_argument("--output-dir", required=True)
-    p.add_argument("--batch-size", type=int, default=128)
-    p.add_argument("--workers", type=int, default=4)
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--print-interval", type=int, default=20)
-    p.add_argument("--prompt-father", action="store_true",
-                   help="append the representative from the preceding level to every prompt")
-    a = p.parse_args()
-    from CLIPs import get_clip
-    out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True)
-    with (out / "evaluation.log").open("w") as log, contextlib.redirect_stdout(log):
-        print(f"arguments={json.dumps(vars(a), sort_keys=True, default=str)}", file=log, flush=True)
-        adapter = get_clip(a.clip, device=a.device)
-        tree = json.loads(Path(a.tree).read_text())
-        evaluation = imagenet_dataloader(a.data, batch_size=a.batch_size,
-                                         num_workers=a.workers, image_size=adapter.input_resolution)
-        summary, artifact = evaluate(adapter, evaluation, tree, a.device, a.print_interval, log,
-                                     a.prompt_father)
-        torch.save(artifact, out / "logits.pt")
-        (out / "metrics.json").write_text(json.dumps(summary, indent=2) + "\n")
-        print(json.dumps(summary, sort_keys=True), file=log, flush=True)
-
-if __name__ == "__main__":
-    main()
+ p=argparse.ArgumentParser(); p.add_argument('--data',required=True); p.add_argument('--clip',required=True); p.add_argument('--output-dir',required=True); p.add_argument('--batch-size',type=int,default=128); p.add_argument('--workers',type=int,default=4); p.add_argument('--device',default='cuda' if torch.cuda.is_available() else 'cpu'); p.add_argument('--prompt-father',action='store_true'); a=p.parse_args(); m=get_clip(a.clip,device=a.device).eval(); l=build_dataloader(a.data,batch_size=a.batch_size,image_size=m.input_resolution,num_workers=a.workers); s=evaluate(m,l,a.device,a.prompt_father); Path(a.output_dir).mkdir(parents=True,exist_ok=True); torch.save({**{f'logits_{k}':s.pop('_logits')[k] for k in l.dataset.class_names},'path_logits':s.pop('_path_logits')},Path(a.output_dir)/'logits.pt'); (Path(a.output_dir)/'metrics.json').write_text(json.dumps(s,indent=2)+'\n'); print(json.dumps(s))
+if __name__=='__main__': main()

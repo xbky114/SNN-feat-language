@@ -1,161 +1,52 @@
-"""Evaluate an SNN visual tower with an ANN CLIP text tower.
-
-The evaluator keeps logits for every timestep and writes image-based shards so
-the complete temporal record can be analysed without one very large file.
-"""
+"""Evaluate an SNN visual tower with fixed three-level semantic labels."""
 from __future__ import annotations
-
-import argparse
-import importlib
-import json
+import argparse, importlib, json
 from pathlib import Path
-
 import torch
-
 from CLIPs import get_clip
 from clip_with_snn_visual import CLIPWithSNNVisual
-from dataloader import imagenet_dataloader
+from dataloader import build_dataloader
+from prompt import build_prompt
 from to_snn.prototype import SNNArtifact
 from to_snn.coding import CODING
-from wordnet_tree import build_prompt, get_level_along_path
 
+def _coding(name):
+    value=getattr(importlib.import_module('to_snn.coding'),name,None)
+    if not isinstance(value,CODING): raise ValueError(f'unknown coding instance: {name!r}')
+    return value
 
-def _coding(name: str):
-    coding = getattr(importlib.import_module("to_snn.coding"), name, None)
-    if not isinstance(coding, CODING):
-        raise ValueError(f"unknown coding instance: {name!r}")
-    return coding
-
-
-def _node_prompt(tree, wnid, prompt_father):
-    level_data = next(data for data in tree["levels"].values() if wnid in data["wnids"])
-    name = level_data["texts"][level_data["wnids"].index(wnid)]
-    if not prompt_father:
-        return build_prompt(name, tree)
-    owner = next(item for item in tree["classes"].values()
-                 if wnid in item["representatives"])
-    position = owner["path"].index(name)
-    level = get_level_along_path(len(owner["path"]), tree["num_bins"], position)
-    return build_prompt(name, tree, level - 1 if level > 1 else None)
-
-
-def _level_prompts(tree, level, prompt_father):
-    return [_node_prompt(tree, wnid, prompt_father)
-            for wnid in tree["levels"][level]["wnids"]]
-
-
-def _metric_line(batch, total, depth, correct, selected, levels):
-    return (f"batch={batch} samples={total} semantic_depth={depth / total:.6f} "
-            f"accuracy={json.dumps({k: correct[k] / total for k in levels})} "
-            f"selectivity={json.dumps({k: selected[k] / total for k in levels})}")
-
-
-@torch.no_grad()
-def evaluate(model, loader, tree, device, timesteps, images_per_file,
-             output_dir, print_interval, log=None, prompt_father=False):
-    model.eval().to(device)
-    bins = int(tree["num_bins"])
-    levels = [str(k) for k in range(1, bins + 1)]
-    level_names = tree["levels"]
-    indices = {k: level_names[k]["class_to_idx"] for k in level_names}
-    paths = torch.tensor([
-        [indices[str(k)][tree["classes"][wnid]["representatives"][k]]
-         for k in range(bins + 1)]
-        for wnid in loader.dataset.classes], dtype=torch.long)
-
-    total = 0
-    depth = torch.zeros(timesteps, dtype=torch.float64)
-    correct = {k: torch.zeros(timesteps, dtype=torch.float64) for k in levels}
-    selected = {k: torch.zeros(timesteps, dtype=torch.float64) for k in levels}
-    shard_path, shard_levels, shard_count, shard_no = [], {k: [] for k in levels}, 0, 0
-
-    def flush_shard():
-        nonlocal shard_path, shard_levels, shard_count, shard_no
-        if not shard_count:
-            return
-        artifact = {"path_logits": torch.cat(shard_path, dim=1)}
-        for key in levels:
-            artifact[f"logits_{key}"] = torch.cat(shard_levels[key], dim=1)
-        torch.save(artifact, output_dir / f"logits_{shard_no:05d}.pt")
-        shard_no += 1
-        shard_path, shard_levels, shard_count = [], {k: [] for k in levels}, 0
-
-    for batch_no, (images, labels) in enumerate(loader, 1):
-        images, labels = images.to(device), labels.to(device)
-        # All hierarchy levels share the same visual trajectory.
-        image_features = model.encode_image(images, timesteps)
-        logits = {k: model.calc_logits_from_image_features(
-            image_features, _level_prompts(tree, k, prompt_father))
-            for k in ["0"] + levels}
-        targets = paths[labels.cpu()]
-        path = torch.stack([
-            logits[str(k)].gather(2, targets[:, k].to(device)[None, :, None]
-                                   .expand(timesteps, -1, 1)).squeeze(-1)
-            for k in range(bins + 1)], dim=2)
-        depth += (path.softmax(2).cpu() *
-                  (torch.arange(bins + 1, dtype=torch.float64) / bins)).sum((1, 2))
-        for k in levels:
-            pred = logits[k].argmax(2).cpu()
-            correct[k] += (pred == targets[:, int(k)][None, :]).sum(1)
-            selected[k] += (path.argmax(2).cpu() == int(k)).sum(1)
-        n = labels.numel(); total += n
-        # Split a batch when necessary so each shard has at most the
-        # configured number of images (the timestep axis is never sharded).
-        start = 0
-        while start < n:
-            take = min(images_per_file - shard_count, n - start)
-            shard_path.append(path[:, start:start + take].cpu())
-            for k in levels:
-                shard_levels[k].append(logits[k][:, start:start + take].cpu())
-            shard_count += take
-            start += take
-            if shard_count == images_per_file:
-                flush_shard()
-        if batch_no % print_interval == 0:
-            line = _metric_line(batch_no, total, depth[-1].item(),
-                                {k: correct[k][-1].item() for k in levels},
-                                {k: selected[k][-1].item() for k in levels}, levels)
-            print(line, file=log, flush=True) if log is not None else print(line, flush=True)
-    flush_shard()
-    per_time = [{"timestep": t + 1, "semantic_depth": depth[t].item() / total,
-                 "accuracy": {k: correct[k][t].item() / total for k in levels},
-                 "selectivity": {k: selected[k][t].item() / total for k in levels}}
-                for t in range(timesteps)]
-    return {"samples": total, "timesteps": timesteps,
-            "final": per_time[-1], "per_timestep": per_time}
-
+def evaluate(model, loader, device, timesteps, images_per_file, output_dir, print_interval, log=None, prompt_father=False):
+    ds=loader.dataset; levels=list(ds.class_names); names=ds.class_names
+    idx={k:{n:i for i,n in enumerate(names[k])} for k in levels}
+    prompts={'basic':[build_prompt(n) for n in names['basic']],
+             'subordinate':[build_prompt(n,ds.parent['subordinate'][n]) if prompt_father else build_prompt(n) for n in names['subordinate']],
+             'fine_grained':[build_prompt(n,ds.parent['fine_grained'][n]) if prompt_father else build_prompt(n) for n in names['fine_grained']]}
+    logits_text={k:prompts[k] for k in levels}; total=0
+    depth=torch.zeros(timesteps); correct={k:torch.zeros(timesteps) for k in levels}; selected={k:torch.zeros(timesteps) for k in levels}
+    shards=[]; shard=[]; shard_no=0
+    for batch_no,batch in enumerate(loader,1):
+        images=batch['image'].to(device); b=images.shape[0]
+        features=model.encode_image(images,timesteps)
+        logits={k:model.calc_logits_from_image_features(features,logits_text[k]) for k in levels}
+        target={k:torch.tensor([idx[k][v] for v in batch[k]],device=device) for k in levels}
+        path=torch.stack([logits[k].gather(2,target[k][None,:,None].expand(timesteps,-1,1)).squeeze(-1) for k in levels],2)
+        depth += (path.softmax(2)*torch.tensor([0.,.5,1.],device=device)).sum((1,2)).cpu()
+        for i,k in enumerate(levels):
+            correct[k] += (logits[k].argmax(2)==target[k][None,:]).sum(1).cpu()
+            selected[k] += (path.argmax(2)==i).sum(1).cpu()
+        total += b
+        shard.append({'path_logits':path.cpu(), **{f'logits_{k}':logits[k].cpu() for k in levels}})
+        if sum(x['path_logits'].shape[1] for x in shard) >= images_per_file:
+            torch.save({k:torch.cat([x[k] for x in shard],1) for k in shard[0]}, output_dir/f'logits_{shard_no:05d}.pt'); shard=[]; shard_no+=1
+        if log and batch_no%print_interval==0: print(f'batch={batch_no} samples={total}',file=log,flush=True)
+    if shard: torch.save({k:torch.cat([x[k] for x in shard],1) for k in shard[0]}, output_dir/f'logits_{shard_no:05d}.pt')
+    per=[{'timestep':i+1,'semantic_depth':depth[i].item()/total,'accuracy':{k:correct[k][i].item()/total for k in levels},'selectivity':{k:selected[k][i].item()/total for k in levels}} for i in range(timesteps)]
+    return {'samples':total,'timesteps':timesteps,'final':per[-1],'per_timestep':per}
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--data", required=True); p.add_argument("--clip", required=True)
-    p.add_argument("--snn", required=True); p.add_argument("--tree", required=True)
-    p.add_argument("--output-dir", required=True); p.add_argument("--coding", required=True)
-    p.add_argument("--T", type=int, required=True); p.add_argument("--images-per-file", type=int, default=256)
-    p.add_argument("--batch-size", type=int, default=32); p.add_argument("--workers", type=int, default=4)
-    p.add_argument("--print-interval", type=int, default=20)
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--prompt-father", action="store_true",
-                   help="append the preceding-level representative to every prompt")
-    a = p.parse_args()
-    if a.T <= 0 or a.images_per_file <= 0 or a.print_interval <= 0:
-        p.error("--T, --images-per-file, and --print-interval must be positive")
-    coding = _coding(a.coding)
-    out = Path(a.output_dir); out.mkdir(parents=True, exist_ok=True)
-    log_path = out / "evaluation.log"
-    with log_path.open("w") as log:
-        print(f"arguments={json.dumps(vars(a), sort_keys=True)}", file=log, flush=True)
-        ann = get_clip(a.clip, device=a.device)
-        snn = SNNArtifact.load(a.snn, map_location=a.device)
-        model = CLIPWithSNNVisual(ann, snn, coding)
-        tree = json.loads(Path(a.tree).read_text())
-        loader = imagenet_dataloader(a.data, batch_size=a.batch_size,
-                                     num_workers=a.workers, image_size=model.input_resolution)
-        summary = evaluate(model, loader, tree, a.device, a.T,
-                           a.images_per_file, out, a.print_interval, log,
-                           a.prompt_father)
-        print(f"final_summary={json.dumps(summary['final'], sort_keys=True)}", file=log, flush=True)
-    (out / "metrics.json").write_text(json.dumps(summary, indent=2) + "\n")
-
-
-if __name__ == "__main__":
-    main()
+ p=argparse.ArgumentParser(); p.add_argument('--data',required=True); p.add_argument('--clip',required=True); p.add_argument('--snn',required=True); p.add_argument('--output-dir',required=True); p.add_argument('--coding',required=True); p.add_argument('--T',type=int,required=True); p.add_argument('--images-per-file',type=int,default=256); p.add_argument('--batch-size',type=int,default=32); p.add_argument('--workers',type=int,default=4); p.add_argument('--device',default='cuda' if torch.cuda.is_available() else 'cpu'); p.add_argument('--print-interval',type=int,default=20); p.add_argument('--prompt-father',action='store_true'); a=p.parse_args()
+ if a.T<1: p.error('--T must be positive')
+ out=Path(a.output_dir); out.mkdir(parents=True,exist_ok=True); ann=get_clip(a.clip,device=a.device); model=CLIPWithSNNVisual(ann,SNNArtifact.load(a.snn,map_location=a.device),_coding(a.coding)); loader=build_dataloader(a.data,batch_size=a.batch_size,image_size=model.input_resolution,num_workers=a.workers)
+ with (out/'evaluation.log').open('w') as log: summary=evaluate(model,loader,a.device,a.T,a.images_per_file,out,a.print_interval,log,a.prompt_father); print(json.dumps(summary['final'],sort_keys=True),file=log)
+ (out/'metrics.json').write_text(json.dumps(summary,indent=2)+'\n')
+if __name__=='__main__': main()

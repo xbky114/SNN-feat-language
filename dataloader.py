@@ -32,6 +32,18 @@ class IMNET_3L_Adapter(Dataset):
                               ("fine_grained", "finegrained")):
             values = json.loads((metadata / f"imagenet-3L-id_{suffix}_dic.json").read_text())
             self.class_names[level] = [values[str(i)] for i in range(len(values))]
+        tree = json.loads((metadata / "imagenet-3L-tree.json").read_text())
+        self.parent = {"subordinate": {}, "fine_grained": {}}
+        for fine_id, row in enumerate(tree):
+            subordinate_name = self.class_names["subordinate"][int(row[1])]
+            basic_name = self.class_names["basic"][int(row[2])]
+            fine_name = self.class_names["fine_grained"][fine_id]
+            if fine_name in self.parent["fine_grained"] and self.parent["fine_grained"][fine_name] != subordinate_name:
+                raise ValueError(f"inconsistent parent for {fine_name}")
+            if subordinate_name in self.parent["subordinate"] and self.parent["subordinate"][subordinate_name] != basic_name:
+                raise ValueError(f"inconsistent parent for {subordinate_name}")
+            self.parent["fine_grained"][fine_name] = subordinate_name
+            self.parent["subordinate"][subordinate_name] = basic_name
         self.samples = []
         for line in (metadata / f"imagenet-F-{split}.txt").read_text().splitlines():
             if line.strip():
@@ -39,10 +51,6 @@ class IMNET_3L_Adapter(Dataset):
                 self.samples.append((path, self.class_names["basic"][int(basic)],
                                      self.class_names["subordinate"][int(subordinate)],
                                      self.class_names["fine_grained"][int(fine)]))
-        self.parent = {"subordinate": {}, "fine_grained": {}}
-        for _, basic, subordinate, fine in self.samples:
-            self.parent["subordinate"].setdefault(subordinate, basic)
-            self.parent["fine_grained"].setdefault(fine, subordinate)
 
     def __len__(self): return len(self.samples)
 
