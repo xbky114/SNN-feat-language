@@ -4,3 +4,6 @@
 [submodule "ANN-to-SNN-DCGS"]
 	path = ANN-to-SNN-DCGS
 	url = https://github.com/h-z-h-cell/ANN-to-SNN-DCGS.git
+[submodule "FreeGrainLearning"]
+	path = FreeGrainLearning
+	url = https://github.com/pseulki/FreeGrainLearning.git

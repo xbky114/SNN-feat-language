@@ -58,7 +58,7 @@ def _run_pass(model, plan, loader, device, capture, stage):
         except TypeError:
             total = "?"
         for index, batch in enumerate(loader, 1):
-            images = batch[0] if isinstance(batch, (tuple, list)) else batch
+            images = batch["image"] if isinstance(batch, dict) else (batch[0] if isinstance(batch, (tuple, list)) else batch)
             if not isinstance(images, torch.Tensor):
                 raise TypeError("calibration batches must be tensors or (images, labels)")
             model(images.to(device, non_blocking=True))

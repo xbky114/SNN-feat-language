@@ -1,26 +1,16 @@
-"""ImageNet dataloaders used by ANN evaluation and SNN calibration.
-exports: calibration_dataloader (image only) and imagenet_dataloader
-"""
+"""Fixed three-level ImageNet loader used by evaluation and calibration."""
 from __future__ import annotations
+import json
 from pathlib import Path
-from typing import Optional
-import torch
-from torch.utils.data import DataLoader, Subset
-from torchvision import datasets, transforms
-import re
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 
-class _ImageOnly:
-    def __init__(self, dataset):
-        self.dataset = dataset
-    def __len__(self):
-        return len(self.dataset)
-    def __getitem__(self, index):
-        image, _ = self.dataset[index]
-        return image
+_METADATA = Path(__file__).resolve().parent / "FreeGrainLearning" / "data"
 
 
-def imagenet_transform(image_size: int = 224):
-    """Return the CLIP/ImageNet validation preprocessing pipeline."""
+def clip_preprocess(image_size=224):
+    """The preprocessing shipped with OpenAI CLIP (kept local by design)."""
     return transforms.Compose([
         transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.CenterCrop(image_size), transforms.ToTensor(),
@@ -28,28 +18,49 @@ def imagenet_transform(image_size: int = 224):
                              (0.26862954, 0.26130211, 0.27577711)),
     ])
 
-def _loader_kwargs(batch_size: int, num_workers: int) -> dict:
-    return dict(batch_size=batch_size, shuffle=False, num_workers=num_workers,
-                pin_memory=torch.cuda.is_available())
+
+class IMNET_3L_Adapter(Dataset):
+    """ImageNet-3L validation samples with fixed semantic string labels."""
+    levels = ("basic", "subordinate", "fine_grained")
+
+    def __init__(self, root, *, split="val", image_size=224, metadata_dir=_METADATA):
+        self.root = Path(root).expanduser()
+        metadata = Path(metadata_dir)
+        self.transform = clip_preprocess(image_size)
+        self.class_names = {}
+        for level, suffix in (("basic", "basic"), ("subordinate", "subord"),
+                              ("fine_grained", "finegrained")):
+            values = json.loads((metadata / f"imagenet-3L-id_{suffix}_dic.json").read_text())
+            self.class_names[level] = [values[str(i)] for i in range(len(values))]
+        self.samples = []
+        for line in (metadata / f"imagenet-F-{split}.txt").read_text().splitlines():
+            if line.strip():
+                path, basic, subordinate, fine = line.split()[:4]
+                self.samples.append((path, self.class_names["basic"][int(basic)],
+                                     self.class_names["subordinate"][int(subordinate)],
+                                     self.class_names["fine_grained"][int(fine)]))
+        self.parent = {"subordinate": {}, "fine_grained": {}}
+        for _, basic, subordinate, fine in self.samples:
+            self.parent["subordinate"].setdefault(subordinate, basic)
+            self.parent["fine_grained"].setdefault(fine, subordinate)
+
+    def __len__(self): return len(self.samples)
+
+    def __getitem__(self, index):
+        relative, basic, subordinate, fine = self.samples[index]
+        with Image.open(self.root / relative) as image:
+            image = image.convert("RGB")
+        return {"image": self.transform(image), "basic": basic,
+                "subordinate": subordinate, "fine_grained": fine}
 
 
-def imagenet_dataloader(root: str | Path, *, batch_size: int = 32,
-                        image_size: int = 224, num_workers: int = 4):
-    """Build the ordinary ImageNet ``ImageFolder`` loader (images, labels)."""
-    dataset = datasets.ImageFolder(str(root), transform=imagenet_transform(image_size))
-    return DataLoader(dataset, **_loader_kwargs(batch_size, num_workers))
+def build_dataloader(root, *, batch_size=32, image_size=224, num_workers=4,
+                     split="val", metadata_dir=_METADATA):
+    dataset = IMNET_3L_Adapter(root, split=split, image_size=image_size,
+                               metadata_dir=metadata_dir)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                      drop_last=False, num_workers=num_workers)
 
 
-def calibration_dataloader(root: str | Path, *, batch_size: int = 32,
-                          calibration_size: Optional[int] = 1024,
-                          image_size: int = 224, num_workers: int = 4):
-    """Build an image-only loader for calibration.
-
-    Samples are taken in ImageFolder order, making calibration deterministic.
-    ``calibration_size=None`` uses the complete dataset.
-    """
-    dataset = datasets.ImageFolder(str(root), transform=imagenet_transform(image_size))
-    if calibration_size is not None and calibration_size < len(dataset):
-        dataset = Subset(dataset, range(max(0, calibration_size)))
-    return DataLoader(_ImageOnly(dataset), **_loader_kwargs(batch_size, num_workers))
-
+# Kept as a migration alias for callers that used the old name.
+imagenet_dataloader = build_dataloader

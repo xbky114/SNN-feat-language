@@ -156,7 +156,7 @@ def collect_statistics(model, loader, targets, mode='99.9', device=None, level='
                 hooks.append(module.register_forward_hook(
                     lambda m, args, output, name=name: record(name, output)))
         for index, batch in enumerate(loader, 1):
-            images = batch[0] if isinstance(batch, (tuple, list)) and batch else batch
+            images = batch["image"] if isinstance(batch, dict) else (batch[0] if isinstance(batch, (tuple, list)) and batch else batch)
             if not isinstance(images, torch.Tensor):
                 raise TypeError('calibration batches must be tensors or (images, labels)')
             model(images.to(device))
