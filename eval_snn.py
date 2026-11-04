@@ -49,7 +49,10 @@ def evaluate(model, loader, device, timesteps, images_per_file, output_dir, prin
             shard = []
             shard_no += 1
         if log and batch_no % print_interval == 0:
-            print(f'batch={batch_no} samples={total}', file=log, flush=True)
+            print(f"batch={batch_no} samples={total} semantic_depth={depth[-1].item()/total:.6f} "
+                  f"accuracy={json.dumps({k: correct[k][-1].item()/total for k in levels})} "
+                  f"selectivity={json.dumps({k: selected[k][-1].item()/total for k in levels})}",
+                  file=log, flush=True)
     if shard: torch.save({k:torch.cat([x[k] for x in shard],1) for k in shard[0]}, output_dir/f'logits_{shard_no:05d}.pt')
     per=[{'timestep':i+1,'semantic_depth':depth[i].item()/total,'accuracy':{k:correct[k][i].item()/total for k in levels},'selectivity':{k:selected[k][i].item()/total for k in levels}} for i in range(timesteps)]
     return {'samples':total,'timesteps':timesteps,'final':per[-1],'per_timestep':per}
