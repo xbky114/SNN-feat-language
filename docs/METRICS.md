@@ -1,26 +1,43 @@
+# Metrics
+
+评测使用三层标签：
+
+```text
+basic → subordinate → fine_grained
+```
+
+## Accuracy
+
+每个层级独立进行横向分类。模型对该层级全部类别产生 logits，预测类别与 batch 中对应的真实字符串标签相同则计为正确。
+
+报告：
+
+```text
+accuracy.basic
+accuracy.subordinate
+accuracy.fine_grained
+```
+
+## Selectivity
+
+对每张图片，取其真实 basic、subordinate、fine_grained 类别对应的三个 logits。对三者做比较，最高的层级计为模型选择的语义深度。
+
+报告模型选择各层级的比例：
+
+```text
+selectivity.basic
+selectivity.subordinate
+selectivity.fine_grained
+```
+
 ## Semantic depth
 
-Restrict logits to the image's path and apply softmax:
+对真实路径上的三个 logits 做 softmax，并使用层级权重：
 
-\[
-D = \sum_{k=0}^{N} P_k\alpha_k, \qquad \alpha_k = \frac{k}{L}.
-\]
+```text
+basic = 0.0
+subordinate = 0.5
+fine_grained = 1.0
+```
 
-Here (k=0) is the root and (k=L+1) is the leaf. Report the dataset mean
-of (D).
-
-## Classification accuracy
-
-For each granularity (k=1,\ldots,N), classify among all concepts in level
-(k). (A_k) is the fraction whose prediction equals the ground-truth
-representative at that level.
-
-## Semantic selectivity
-
-For each image, find the largest logit among the (L+1) path concepts. For
-each (k=1,\ldots,Nc), (S_k) is the fraction of images whose winning
-concept is in bin (k). The root (bin 0) is excluded from reported
-selectivity values.
-
-All metrics are averaged over the evaluation set and may be reported per
-timestep for SNN evaluation.
+每张图片的 semantic depth 是三层概率加权和，最终报告全体样本的平均值。
