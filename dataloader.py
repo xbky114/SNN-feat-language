@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
 _METADATA = Path(__file__).resolve().parent / "FreeGrainLearning" / "data"
+_INAT_NAMES = Path(__file__).resolve().parent / "data" / "metadata" / "inat21_names.json"
+_CUB_NAMES = Path(__file__).resolve().parent / "data" / "metadata" / "cub_names.json"
 
 
 def clip_preprocess(image_size=224):
@@ -85,9 +87,10 @@ def _read_annotations(path):
 
 
 class INAT21_Adapter(HierarchyDataLoader):
-    """iNat21-F: order / family / species, using official annotation IDs."""
+    """iNat21-F annotation IDs with offline iNaturalist/ITIS English labels."""
 
-    def __init__(self, root, *, split="val", image_size=224, metadata_dir=_METADATA):
+    def __init__(self, root, *, split="val", image_size=224, metadata_dir=_METADATA,
+                 names_file=_INAT_NAMES):
         if split not in ("val", "train"):
             raise ValueError("iNat21 supports split='val' or 'train'")
         annotations = _read_annotations(Path(metadata_dir) / f"inat21-F-{split}.txt")
@@ -100,43 +103,64 @@ class INAT21_Adapter(HierarchyDataLoader):
                 previous = mapping.setdefault(i, name)
                 if previous != name:
                     raise ValueError(f"inconsistent taxonomy for {path}")
-        super().__init__(root, image_size=image_size, annotations=annotations, names=names)
-
-
-# Names verified against Fine-Grained-or-Not/birds/Birds_name.xlsx at commit
-# 8a188108bd1484d1bffe0a0a0c766c9f03ef9925, joined by species ID to
-# birds_get_tree_target_2.py. Tuple offsets are the zero-based FGL label IDs.
-# Source inconsistencies and display-name decisions: docs/CUB_LABEL_NAMES.md.
-_CUB_ORDERS = (
-    "Anseriformes", "Apodiformes", "Caprimulgiformes", "Charadriiformes",
-    "Coraciiformes", "Cuculiformes", "Gaviiformes", "Passeriformes",
-    "Pelecaniformes", "Piciformes", "Podicipediformes", "Procellariiformes",
-    "Suliformes",
-)
-_CUB_FAMILIES = (
-    "Anatidae", "Trochilidae", "Caprimulgidae", "Alcidae", "Laridae",
-    "Stercorariidae", "Alcedinidae", "Laridae (Red legged Kittiwake)", "Cuculidae", "Gaviidae",
-    "Alaudidae", "Bombycillidae", "Cardinalidae", "Certhiidae", "Corvidae",
-    "Fringillidae", "Hirundinidae", "Icteridae", "Icteriidae", "Laniidae",
-    "Mimidae", "Motacillidae", "Parulidae", "Passerellidae / Emberizidae", "Passeridae",
-    "Ptilonorhynchidae", "Sittidae", "Sturnidae", "Troglodytidae",
-    "Tyrannidae", "Vireonidae", "Pelecanidae", "Picidae", "Podicipedidae",
-    "Diomedeidae", "Procellariidae", "Phalacrocoracidae", "Fregatidae",
-)
+        # Validate the join against scientific names, rather than assuming two
+        # independently produced metadata files use the same class numbering.
+        english = json.loads(Path(names_file).read_text())
+        if english.get("schema_version") != 1:
+            raise ValueError(f"Unsupported iNat naming schema in {names_file}")
+        translated = []
+        for level, scientific in zip(self.levels, names):
+            records = english["levels"][level]
+            mapping = {}
+            for record in records:
+                class_id = record["id"]
+                if class_id in mapping:
+                    raise ValueError(f"Duplicate {level} class ID: {class_id}")
+                annotation_name = record.get("annotation_name", record["scientific_name"])
+                if scientific.get(class_id) != annotation_name:
+                    raise ValueError(f"iNat English metadata mismatch: {level} {class_id}")
+                if not isinstance(record["name"], str) or not record["name"].strip():
+                    raise ValueError(f"Empty English name: {level} {class_id}")
+                mapping[class_id] = record["name"]
+            if mapping.keys() != scientific.keys():
+                raise ValueError(f"Incomplete iNat English metadata for {level}")
+            if len(set(name.casefold() for name in mapping.values())) != len(mapping):
+                raise ValueError(f"Duplicate English class names for {level}")
+            translated.append(mapping)
+        if set(translated[0].values()) & set(translated[1].values()):
+            raise ValueError("iNat order and family names must differ")
+        super().__init__(root, image_size=image_size, annotations=annotations, names=translated)
 
 
 class CUB_Adapter(HierarchyDataLoader):
     """CUB-F evaluation: split folders, original CUB images, or HF Parquet."""
 
-    def __init__(self, root, *, split="val", image_size=224, metadata_dir=_METADATA):
+    def __init__(self, root, *, split="val", image_size=224, metadata_dir=_METADATA,
+                 names_file=_CUB_NAMES):
         if split not in ("val", "test"):
             raise ValueError("CUB-F currently supports evaluation only (val/test)")
         annotations = _read_annotations(Path(metadata_dir) / "cub-Real-val.txt")
         fine_names = {ids[2]: Path(path).parent.name.split(".", 1)[1].replace("_", " ")
                       for path, ids in annotations}
+        metadata = json.loads(Path(names_file).read_text())
+        if metadata.get("schema_version") != 1:
+            raise ValueError(f"Unsupported CUB naming schema in {names_file}")
+        names = []
+        for column, level in enumerate(self.levels[:2]):
+            records = metadata["levels"][level]
+            mapping = {record["id"]: record["name"] for record in records}
+            expected = {ids[column] for _, ids in annotations}
+            if len(mapping) != len(records) or mapping.keys() != expected:
+                raise ValueError(f"Invalid CUB class IDs for {level}")
+            if any(not isinstance(name, str) or not name.strip() for name in mapping.values()):
+                raise ValueError(f"Empty CUB class name for {level}")
+            if len({name.casefold() for name in mapping.values()}) != len(mapping):
+                raise ValueError(f"Duplicate CUB class names for {level}")
+            names.append(mapping)
+        if set(names[0].values()) & set(names[1].values()):
+            raise ValueError("CUB order and family names must differ")
         super().__init__(root, image_size=image_size, annotations=annotations,
-                         names=(dict(enumerate(_CUB_ORDERS)),
-                                dict(enumerate(_CUB_FAMILIES)), fine_names))
+                         names=(*names, fine_names))
         self._parquet_locations = None
         self._cached_group = None
         if (self.root / "test").is_dir():
