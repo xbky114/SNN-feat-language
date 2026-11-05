@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 from CLIPs import get_clip
 from clip_with_snn_visual import CLIPWithSNNVisual
-from dataloader import build_dataloader
+from dataloader import DATASETS, build_dataloader
 from prompt import build_prompt
 from to_snn.prototype import SNNArtifact
 from to_snn.coding import CODING
@@ -59,6 +59,7 @@ def evaluate(model, loader, device, timesteps, images_per_file, output_dir, prin
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", required=True, choices=DATASETS)
     parser.add_argument('--data', required=True)
     parser.add_argument('--clip', required=True)
     parser.add_argument('--snn', required=True)
@@ -78,7 +79,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     ann = get_clip(args.clip, device=args.device)
     model = CLIPWithSNNVisual(ann, SNNArtifact.load(args.snn, map_location=args.device), _coding(args.coding))
-    loader = build_dataloader(args.data, batch_size=args.batch_size, image_size=model.input_resolution, num_workers=args.workers)
+    loader = build_dataloader(args.dataset, args.data, batch_size=args.batch_size, image_size=model.input_resolution, num_workers=args.workers)
     with (output_dir / 'evaluation.log').open('w') as log:
         summary = evaluate(model, loader, args.device, args.T, args.images_per_file, output_dir, args.print_interval, log, args.prompt_father)
         print(json.dumps(summary['final'], sort_keys=True), file=log)

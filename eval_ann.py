@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from CLIPs import get_clip
-from dataloader import build_dataloader
+from dataloader import DATASETS, build_dataloader
 from prompt import build_prompt
 
 
@@ -58,6 +58,7 @@ def evaluate(model, loader, device="cpu", prompt_father=False):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", required=True, choices=DATASETS)
     parser.add_argument("--data", required=True)
     parser.add_argument("--clip", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -67,7 +68,7 @@ def main():
     parser.add_argument("--prompt-father", action="store_true")
     args = parser.parse_args()
     model = get_clip(args.clip, device=args.device).eval()
-    loader = build_dataloader(args.data, batch_size=args.batch_size, image_size=model.input_resolution, num_workers=args.workers)
+    loader = build_dataloader(args.dataset, args.data, batch_size=args.batch_size, image_size=model.input_resolution, num_workers=args.workers)
     summary = evaluate(model, loader, args.device, args.prompt_father)
     logits = summary.pop("_logits")
     path_logits = summary.pop("_path_logits")

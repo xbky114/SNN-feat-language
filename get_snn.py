@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from dataloader import build_dataloader
+from dataloader import DATASETS, build_dataloader
 from to_snn import convert_clip, load_conversion_params
 from to_snn.prototype import SNNArtifact
 
@@ -36,7 +36,8 @@ def save_conversion_result(result, output):
 
 def main():
     p = argparse.ArgumentParser(description="Convert an OpenAI CLIP visual tower to SNN")
-    p.add_argument("--data", required=True, help="ImageFolder directory used for calibration")
+    p.add_argument("--dataset", required=True, choices=DATASETS)
+    p.add_argument("--data", required=True, help="Dataset root directory used for calibration")
     p.add_argument("--clip", required=True, help="CLIP backend name, e.g. openai_rn50")
     p.add_argument("--meth", required=True, help="Conversion method, e.g. DCGS")
     p.add_argument("--params", required=True, help="YAML file containing conversion parameters")
@@ -48,7 +49,7 @@ def main():
     params = load_conversion_params(a.params, a.meth)
     # The bundled RN50 preprocessing uses 224px inputs.  convert_clip loads
     # the requested adapter and dispatches the requested conversion method.
-    calibration = build_dataloader(a.data, batch_size=a.batch_size,
+    calibration = build_dataloader(a.dataset, a.data, batch_size=a.batch_size,
                                    image_size=224, num_workers=a.workers)
     # Reuse the public factory API; it loads the named adapter and dispatches
     # the requested conversion method.  The already-created calibration loader
