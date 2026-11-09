@@ -1,0 +1,9 @@
+neuron: TwoSide
+time_steps: 8
+percent: 0.999
+linear_num: 8
+qkv_num: 8
+softmax_num: 8
+softmax_p: 0.0125
+gap: 2.0
+fused: true
