@@ -5,10 +5,9 @@ from torch import nn
 
 try:
     import triton  # noqa: F401
-except ImportError:  # pragma: no cover - exercised when Triton is absent
-    _fused_step = None
-else:
     from ._two_side_triton import step as _fused_step
+except Exception:  # pragma: no cover - exercised when Triton is absent/broken
+    _fused_step = None
 
 
 class TwoSide(nn.Module):
@@ -47,10 +46,10 @@ class TwoSide(nn.Module):
     @staticmethod
     def _scalar_threshold(value, name):
         tensor = torch.as_tensor(value).detach().clone()
-        if tensor.numel() != 1 or not tensor.is_floating_point() and not tensor.is_complex():
-            # Integer scalar values are valid and converted to the input dtype.
-            if tensor.numel() != 1:
-                raise ValueError(f"{name} must be a scalar")
+        if tensor.numel() != 1:
+            raise ValueError(f"{name} must be a scalar")
+        if tensor.is_complex():
+            raise ValueError(f"{name} must be real")
         tensor = tensor.reshape(()).float()
         if not torch.isfinite(tensor) or tensor < 0:
             raise ValueError(f"{name} must be finite and non-negative")
@@ -89,8 +88,7 @@ class TwoSide(nn.Module):
             negative = ((charged.unsqueeze(0)
                          <= -(self._negative_levels - self.negative_threshold.to(x) / 2)
                          .reshape((-1,) + (1,) * x.ndim))
-                        & (self.cumulative_out.unsqueeze(0)
-                           >= self._negative_levels.reshape((-1,) + (1,) * x.ndim))).to(x.dtype)
+                        ).to(x.dtype)
             selected_positive = positive.clone()
             selected_negative = negative.clone()
             if self.num_thresholds > 1:

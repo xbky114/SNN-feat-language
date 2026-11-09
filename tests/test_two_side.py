@@ -15,9 +15,15 @@ class TwoSideNeuronTests(unittest.TestCase):
         self.assertTrue(torch.allclose(neuron(torch.tensor([-1.0])), torch.tensor([-1.0])))
         self.assertTrue(torch.allclose(neuron.cumulative_out, torch.tensor([0.0])))
 
+    def test_negative_input_can_spike_from_rest(self):
+        neuron = TwoSide(positive_threshold=1.0, negative_threshold=1.0,
+                         num_thresholds=1, fused=False)
+        self.assertTrue(torch.allclose(neuron(torch.tensor([-1.0])), torch.tensor([-1.0])))
+
     def test_geometric_levels_select_incremental_spikes(self):
         neuron = TwoSide(1.0, 1.0, num_thresholds=3, gap=2.0, fused=False)
-        # Thresholds are 1, 1/2, 1/4 and the source boundary is 0.75 * threshold.
+        # The source checks the levels from 4 down to 1 and selects the first
+        # eligible level, leaving the base scale as the smallest level.
         out = neuron(torch.tensor([1.0]))
         self.assertTrue(torch.allclose(out, torch.tensor([1.0])))
         self.assertTrue(torch.allclose(neuron.mem, torch.tensor([0.0])))

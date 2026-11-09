@@ -207,8 +207,9 @@ class ECMTAttention(nn.MultiheadAttention):
                 attn_mask=None, average_attn_weights=True, is_causal=False):
         # CLIP's visual and text towers use self-attention with a shared width.
         # Keep a clear fallback for unusual cross-attention calls.
-        if not (query.shape[-1] == self.embed_dim and key.shape[-1] == self.embed_dim
-                and value.shape[-1] == self.embed_dim):
+        if (query.ndim != 3 or key.ndim != 3 or value.ndim != 3
+                or not (query.shape[-1] == self.embed_dim and key.shape[-1] == self.embed_dim
+                        and value.shape[-1] == self.embed_dim)):
             return super().forward(query, key, value, key_padding_mask=key_padding_mask,
                                    need_weights=need_weights, attn_mask=attn_mask,
                                    average_attn_weights=average_attn_weights, is_causal=is_causal)
@@ -236,11 +237,18 @@ class ECMTAttention(nn.MultiheadAttention):
         v = self.v_neuron(v).contiguous().view(S, B, self.num_heads, head_dim).permute(1, 2, 0, 3)
         scores = self.qk(q, k.transpose(-2, -1)) * (head_dim ** -0.5)
         if attn_mask is not None:
-            mask = attn_mask.to(dtype=scores.dtype, device=scores.device)
+            mask = attn_mask.to(device=scores.device)
             if mask.dim() == 2:
-                scores = scores + mask[None, None, :, :]
+                if mask.dtype == torch.bool:
+                    scores = scores.masked_fill(mask[None, None, :, :], float("-inf"))
+                else:
+                    scores = scores + mask.to(dtype=scores.dtype)[None, None, :, :]
             else:
-                scores = scores + mask.view(B, self.num_heads, L, S)
+                mask = mask.view(B, self.num_heads, L, S)
+                if mask.dtype == torch.bool:
+                    scores = scores.masked_fill(mask, float("-inf"))
+                else:
+                    scores = scores + mask.to(dtype=scores.dtype)
         if key_padding_mask is not None:
             scores = scores.masked_fill(key_padding_mask[:, None, None, :].to(torch.bool), float("-inf"))
         weights = self.softmax_neuron(self.softmax(scores))

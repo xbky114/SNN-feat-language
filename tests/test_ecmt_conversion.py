@@ -8,6 +8,7 @@ from CLIPs.openai_vit_L_14.conversion import make_conversion_plan
 from CLIPs.openai_vit_L_14.model import VisionTransformer
 from to_snn.ECMT import ECMTConversionParams, convert
 from to_snn.prototype import SNNArtifact
+from to_snn.prototype import ConversionPlan, ConversionTarget
 
 
 class TestECMTConversion(unittest.TestCase):
@@ -59,6 +60,14 @@ class TestECMTConversion(unittest.TestCase):
         loader = (batch for batch in [self.images])
         with self.assertRaises(ValueError):
             convert(self.model, plan, self.params, calibration_loader=loader)
+
+    def test_incomplete_plan_is_rejected(self):
+        plan = ConversionPlan(
+            (ConversionTarget("ln_pre", "layernorm"),),
+            {"required_kinds": ("layernorm",), "expected_paths": ("ln_pre",)},
+        )
+        with self.assertRaises(ValueError):
+            convert(self.model, plan, self.params, calibration_loader=[self.images])
 
 
 if __name__ == "__main__":

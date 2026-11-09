@@ -30,8 +30,7 @@ def _step_kernel(
         positive_boundary = (positive_threshold - positive_base * 0.5).to(dtype).to(tl.float32)
         negative_boundary = (negative_threshold - negative_base * 0.5).to(dtype).to(tl.float32)
         positive = (charged >= positive_boundary).to(tl.float32)
-        negative = ((charged <= -negative_boundary)
-                    & (cumulative >= negative_threshold)).to(tl.float32)
+        negative = (charged <= -negative_boundary).to(tl.float32)
         positive_sum += positive_threshold * (positive - previous_positive)
         negative_sum += negative_threshold * (negative - previous_negative)
         previous_positive = positive
