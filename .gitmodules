@@ -7,3 +7,6 @@
 [submodule "FreeGrainLearning"]
 	path = FreeGrainLearning
 	url = https://github.com/pseulki/FreeGrainLearning.git
+[submodule "Transformer-to-SNN-ECMT"]
+	path = Transformer-to-SNN-ECMT
+	url = https://github.com/h-z-h-cell/Transformer-to-SNN-ECMT.git
