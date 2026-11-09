@@ -362,6 +362,7 @@ def _calibrate(model, plan, loader, device, percent):
 
 
 def _replace(model, plan, thresholds, params):
+    backend = (getattr(plan, "metadata", {}) or {}).get("backend")
     for target in plan.targets:
         kind = str(target.kind).lower()
         parent, _, name = target.path.rpartition(".")
@@ -379,6 +380,16 @@ def _replace(model, plan, thresholds, params):
                 levels = params.softmax_num if kind == "softmax_neuron" else (params.qkv_num if kind in {"qkv", "q", "k", "v"} else params.linear_num)
                 pos = params.softmax_p if kind == "softmax_neuron" else info["positive"]
                 neg = params.softmax_p if kind == "softmax_neuron" else info["negative"]
+                # The reference Transformer-to-SNN-ECMT implementation uses
+                # fixed ViT fc2 scales (0.25/0.08), rather than the
+                # calibration statistics, because this residual branch has a
+                # very different range from the other linear seams.  In the
+                # OpenAI adapter this seam is named ``mlp.c_proj_neuron``.
+                # Keep the override scoped to that explicit backend/path so
+                # other transformer plans retain their calibrated thresholds.
+                if (backend == "openai_vit_L_14" and kind == "linear"
+                        and target.path.endswith(".mlp.c_proj_neuron")):
+                    pos, neg = 0.25, 0.08
                 replacement = nn.Sequential(original, _neuron(pos, neg, levels, params))
         else:
             raise ValueError(f"unsupported ECMT target kind: {target.kind!r}")
@@ -406,8 +417,22 @@ def convert(visual, plan, params, calibration_loader=None, **_kwargs):
                 "samples": 0,
                 "elements": 0,
             }
+        elif (str(target.kind).lower() == "linear"
+              and (getattr(plan, "metadata", {}) or {}).get("backend") == "openai_vit_L_14"
+              and target.path.endswith(".mlp.c_proj_neuron")):
+            # Match the source ECMT ViT fc2 rule; these are effective
+            # thresholds, so the saved conversion report is auditable.
+            thresholds[target.path]["positive"] = 0.25
+            thresholds[target.path]["negative"] = 0.08
     model = copy.deepcopy(visual).eval()
     _replace(model, plan, thresholds, params)
+    # ViT-L/14 ECMT is a long recurrent computation.  Keeping the converted
+    # visual tower in OpenAI CLIP's storage dtype (FP16 on CUDA) causes the
+    # compensation differences and matrix products to lose the small
+    # timestep increments by T=128.  The source model can remain FP16; the
+    # self-contained artifact deliberately computes the temporal trajectory in
+    # FP32 and casts its public input at the boundary below.
+    model.float()
     info = {"params": {k: getattr(params, k) for k in params.__dataclass_fields__},
             "thresholds": thresholds,
             "targets": [{"path": t.path, "kind": t.kind} for t in plan.targets]}

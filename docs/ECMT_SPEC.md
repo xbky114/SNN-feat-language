@@ -126,6 +126,7 @@ The parameter object is serializable through the existing YAML loader and is sto
 - Calibration runs in evaluation and no-grad mode on a copied ANN visual model. It does not mutate the caller's model.
 - Target activations are processed as a bounded streaming statistic. No complete activation cache is retained.
 - For each ordinary neuron target, calibration determines one scalar positive scale as the empirical `percent` quantile and one scalar negative scale as the negated empirical `(1 - percent)` quantile over all batch, token, head, and feature elements observed at that target. The selected scales must be finite and strictly positive for an active target; an inactive target is represented by a zero-output replacement.
+- The OpenAI ViT-L/14 `mlp.c_proj_neuron` (the source method's `fc2`) is the one source-defined exception: its effective scales are fixed at positive `0.25` and negative `0.08` after calibration, matching `Transformer-to-SNN-ECMT`'s ViT rule.
 - Calibration rejects empty targets, non-finite values, and missing plan targets.
 - The calibration input is the ANN input at the corresponding neuron seam. Expectation-compensation modules and matrix-product modules do not receive threshold parameters.
 - Calibration uses the caller's already-preprocessed tensors. The conversion method does not download data, infer labels, or apply a second transform.
@@ -136,6 +137,7 @@ The parameter object is serializable through the existing YAML loader and is sto
 - Conversion deep-copies the visual tower, validates the plan and parameters, calibrates thresholds, creates the conversion-ready attention seams, and replaces targets in a deterministic plan order.
 - The original ANN remains usable after conversion.
 - The converted visual artifact accepts one image tensor per call and returns one visual feature tensor. The artifact does not accept a time dimension.
+- OpenAI ViT-L/14 ECMT artifacts run the converted visual tower in FP32, even when the source OpenAI checkpoint is stored in FP16. This avoids loss of the small compensation increments in long sequences such as `T=128`; the input boundary performs the required cast.
 - External code repeats the static image, calls `reset_state()` once before a sequence, and applies the existing coding object to the per-step feature history.
 - The artifact supports any positive inference timestep count. `time_steps` is metadata and a recommended evaluation value, not a runtime limit.
 - `reset_state()` reaches every nested ECMT neuron and compensation module. A checkpoint loaded from disk starts with clean runtime state.

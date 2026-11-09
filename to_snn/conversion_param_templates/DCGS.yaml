@@ -1,5 +1,5 @@
-neuron: IF # IF/ MTH
-time_steps: 1
-threshold_mode: 99.9 # percentile / var
-threshold_level: layer # layer / channel / neuron
-num_thresholds: 1 # n postive thresholds + n negative thresholds
+neuron: MTH # IF / MTH
+time_steps: 256
+threshold_mode: var # 99.9 / var
+threshold_level: channel # layer / channel / neuron
+num_thresholds: 4

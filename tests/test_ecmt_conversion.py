@@ -42,6 +42,17 @@ class TestECMTConversion(unittest.TestCase):
         artifact.reset_state()
         self.assertTrue(torch.equal(first, artifact(self.images)))
 
+    def test_vit_fc2_uses_reference_fixed_scales(self):
+        plan = make_conversion_plan(self.model)
+        artifact, info = convert(self.model, plan, self.params,
+                                 calibration_loader=[{"image": self.images}])
+        path = "transformer.resblocks.0.mlp.c_proj_neuron"
+        self.assertEqual(info["thresholds"][path]["positive"], 0.25)
+        self.assertEqual(info["thresholds"][path]["negative"], 0.08)
+        neuron = artifact.model.get_submodule(path + ".1")
+        self.assertTrue(torch.equal(neuron.positive_threshold, torch.tensor(0.25)))
+        self.assertTrue(torch.equal(neuron.negative_threshold, torch.tensor(0.08)))
+
     def test_conversion_accepts_tuple_loader_and_checkpoint_roundtrip(self):
         plan = make_conversion_plan(self.model)
         artifact, _ = convert(self.model, plan, self.params,
