@@ -1,0 +1,9 @@
+neuron: TwoSide
+time_steps: 128
+percent: 0.99
+linear_num: 4 # n postive thresholds + n negative thresholds
+qkv_num: 4
+softmax_num: 4
+softmax_p: 0.0125 # fixed threshold
+gap: 2.0 # percentile * gap^k
+fused: true

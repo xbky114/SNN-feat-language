@@ -1,4 +1,4 @@
-"""OpenAI CLIP ViT-L/14 adapter and conversion plan."""
+"""OpenAI CLIP ViT-L/14 adapter and its explicit ECMT conversion plan."""
 
 from torch import nn
 
@@ -7,7 +7,7 @@ from to_snn.prototype import ConversionPlan, ConversionTarget
 
 
 class OpenAIViTL14Adapter(CLIPAdapter):
-    """Adapter exposing OpenAI CLIP's ViT-L/14 visual tower."""
+    """Adapter exposing the OpenAI CLIP ViT-L/14 visual tower."""
 
     to_be_converted = "visual"
 
@@ -44,6 +44,7 @@ class OpenAIViTL14Adapter(CLIPAdapter):
 
     def tokenize(self, texts, context_length=77, truncate=False):
         from .clip import tokenize
+
         return tokenize(texts, context_length=context_length, truncate=truncate)
 
     @property
@@ -59,21 +60,60 @@ class OpenAIViTL14Adapter(CLIPAdapter):
         return self._model.dtype
 
 
+def _add(targets, root, path, kind):
+    try:
+        module = root.get_submodule(path)
+    except AttributeError as exc:
+        raise ValueError(f"OpenAI ViT-L/14 model is missing ECMT seam {path!r}") from exc
+    if not isinstance(module, nn.Module):
+        raise ValueError(f"ECMT seam {path!r} is not a module")
+    targets.append(ConversionTarget(path, kind))
+
+
 def make_conversion_plan(model):
-    """Plan replacement of FFN GELUs in the supplied visual transformer only."""
+    """Enumerate every ECMT seam in the visual transformer."""
     root = model.visual if hasattr(model, "visual") else model
-    targets = tuple(
-        ConversionTarget(name, "gelu")
-        for name, module in root.named_modules()
-        if name and isinstance(module, nn.Module)
-        and module.__class__.__name__ == "QuickGELU"
+    if not hasattr(root, "transformer") or not hasattr(root.transformer, "resblocks"):
+        raise ValueError("OpenAI ViT-L/14 visual tower must expose transformer.resblocks")
+
+    targets = []
+    _add(targets, root, "ln_pre", "layernorm")
+    for index, _block in enumerate(root.transformer.resblocks):
+        prefix = f"transformer.resblocks.{index}"
+        _add(targets, root, f"{prefix}.ln_1", "layernorm")
+        _add(targets, root, f"{prefix}.attn.qkv_neuron", "qkv")
+        _add(targets, root, f"{prefix}.attn.q_neuron", "q")
+        _add(targets, root, f"{prefix}.attn.k_neuron", "k")
+        _add(targets, root, f"{prefix}.attn.v_neuron", "v")
+        _add(targets, root, f"{prefix}.attn.qk", "qk")
+        _add(targets, root, f"{prefix}.attn.softmax", "softmax")
+        _add(targets, root, f"{prefix}.attn.softmax_neuron", "softmax_neuron")
+        _add(targets, root, f"{prefix}.attn.av", "av")
+        _add(targets, root, f"{prefix}.attn.x_out_neuron", "linear")
+        _add(targets, root, f"{prefix}.mlp.c_fc_neuron", "linear")
+        _add(targets, root, f"{prefix}.mlp.gelu", "quickgelu")
+        _add(targets, root, f"{prefix}.mlp.c_proj_neuron", "linear")
+        _add(targets, root, f"{prefix}.ln_2", "layernorm")
+
+    required = (
+        "layernorm", "qkv", "q", "k", "v", "qk", "softmax",
+        "softmax_neuron", "av", "linear", "quickgelu",
     )
-    return ConversionPlan(targets, {"tower": "visual", "text_tower": "ann", "activations": "ffn_gelu"})
+    metadata = {
+        "tower": "visual",
+        "text_tower": "ann",
+        "backend": "openai_vit_L_14",
+        "required_kinds": required,
+        "expected_paths": tuple(target.path for target in targets),
+        "attention": "explicit_qk_av",
+    }
+    return ConversionPlan(tuple(targets), metadata)
 
 
 def load(device="cpu", download_root=None):
     """Load the complete OpenAI CLIP ViT-L/14 model."""
     from .clip import load as openai_load
+
     model, preprocessing = openai_load(
         "ViT-L/14", device=device, jit=False, download_root=download_root
     )
