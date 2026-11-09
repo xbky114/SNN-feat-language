@@ -121,27 +121,34 @@ def _validate_plan(model, plan):
 class _Reservoir:
     def __init__(self, limit=100_000):
         self.limit = limit
-        self.values = []
+        self.values = torch.empty(0, dtype=torch.float32)
         self.count = 0
 
     def add(self, x):
         x = x.detach().float().reshape(-1).cpu()
         if not x.numel():
             return
+        previous = self.count
         self.count += x.numel()
-        if len(self.values) < self.limit:
-            self.values.append(x[: self.limit - len(self.values)])
-        elif self.count % 17 == 0:
-            # Deterministic bounded replacement keeps calibration reproducible.
-            slot = (self.count // 17) % self.limit
-            flat = torch.cat(self.values)
-            flat[slot] = x[0]
-            self.values = [flat]
+        filled = min(self.limit - self.values.numel(), x.numel())
+        if filled:
+            self.values = torch.cat((self.values, x[:filled]))
+            x = x[filled:]
+        if not x.numel():
+            return
+        # Deterministic reservoir sampling keeps calibration memory bounded.
+        # Every item in the stream has the same chance of occupying a slot.
+        start = previous + filled
+        positions = torch.arange(start, self.count, dtype=torch.int64)
+        slots = torch.remainder(positions * 1103515245 + 12345, positions + 1)
+        keep = slots < self.limit
+        if keep.any():
+            self.values[slots[keep]] = x[keep]
 
     def quantile(self, q):
-        if not self.values:
+        if not self.values.numel():
             raise ValueError("empty calibration activation")
-        return float(torch.quantile(torch.cat(self.values), q).item())
+        return float(torch.quantile(self.values, q).item())
 
 
 def _calibrate(model, plan, loader, device, percent):

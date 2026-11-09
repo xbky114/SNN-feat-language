@@ -69,7 +69,12 @@ class CLIPWithSNNVisual(CLIPAdapter):
         for t in range(1, T + 1):
             coded = self.coding.update(coded, self.visual(img), t)
             # Keep the encoder's state precision; cast only the pool input.
-            image_features.append(self.pool(coded.to(dtype=self.pool_dtype)))
+            if self.pool is None:
+                # ViT visual towers already return their projected class-token
+                # feature and have no separate pooling module.
+                image_features.append(coded)
+            else:
+                image_features.append(self.pool(coded.to(dtype=self.pool_dtype)))
         return torch.stack(image_features, dim=0)
 
     def forward(self, img_feat, text_feat):
