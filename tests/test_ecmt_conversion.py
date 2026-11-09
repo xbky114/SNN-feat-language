@@ -55,11 +55,12 @@ class TestECMTConversion(unittest.TestCase):
             loaded.reset_state()
             self.assertTrue(torch.equal(expected, loaded(self.images)))
 
-    def test_one_shot_loader_is_rejected(self):
+    def test_one_shot_loader_is_accepted(self):
         plan = make_conversion_plan(self.model)
         loader = (batch for batch in [self.images])
-        with self.assertRaises(ValueError):
-            convert(self.model, plan, self.params, calibration_loader=loader)
+        artifact, info = convert(self.model, plan, self.params, calibration_loader=loader)
+        self.assertIsInstance(artifact, SNNArtifact)
+        self.assertEqual(info["thresholds"]["transformer.resblocks.0.attn.qkv_neuron"]["samples"], 2)
 
     def test_incomplete_plan_is_rejected(self):
         plan = ConversionPlan(
