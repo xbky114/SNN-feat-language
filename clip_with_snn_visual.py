@@ -80,6 +80,11 @@ class CLIPWithSNNVisual(CLIPAdapter):
     def forward(self, img_feat, text_feat):
         image_features = img_feat / img_feat.norm(dim=-1, keepdim=True)
         text_features = text_feat / text_feat.norm(dim=-1, keepdim=True)
+        # ECMT ViT artifacts run their recurrent visual tower in FP32 for
+        # numerical stability, while the OpenAI text tower may remain FP16.
+        # Promote the small text matrix at the final boundary so mixed-dtype
+        # matmul does not fail and image/text normalization uses one dtype.
+        text_features = text_features.to(dtype=image_features.dtype)
         return self.logit_scale.exp() * image_features @ text_features.t()
 
     def calc_logits_through_time(self, img, texts, T):

@@ -58,14 +58,16 @@ class TwoSide(nn.Module):
     def _levels(self, base, x):
         # ECMT enumerates the geometric levels from the largest level down to
         # the calibrated base scale.
+        state_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
         exponents = torch.arange(self.num_thresholds - 1, -1, -1,
-                                 device=x.device, dtype=x.dtype)
-        return (base.to(device=x.device, dtype=x.dtype)
-                * torch.pow(torch.as_tensor(self.gap, device=x.device, dtype=x.dtype), exponents)).contiguous()
+                                 device=x.device, dtype=state_dtype)
+        return (base.to(device=x.device, dtype=state_dtype)
+                * torch.pow(torch.as_tensor(self.gap, device=x.device, dtype=state_dtype), exponents)).contiguous()
 
     def _initialize(self, x):
-        self.mem = torch.zeros_like(x)
-        self.cumulative_out = torch.zeros_like(x)
+        state_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+        self.mem = torch.zeros_like(x, dtype=state_dtype)
+        self.cumulative_out = torch.zeros_like(x, dtype=state_dtype)
         self._positive_levels = self._levels(self.positive_threshold, x)
         self._negative_levels = self._levels(self.negative_threshold, x)
         self.T = 0
@@ -73,6 +75,12 @@ class TwoSide(nn.Module):
     def forward(self, x):
         if not torch.is_floating_point(x):
             raise TypeError("TwoSide expects a floating-point tensor")
+        # Attention softmax tensors are often strided after transpose.  Make
+        # one contiguous view before checking the fused path; otherwise a
+        # large FP32 [B, heads, tokens, tokens] activation falls back to the
+        # eager level dimension and can require gigabytes per neuron step.
+        if self.fused and _fused_step is not None and not x.is_contiguous():
+            x = x.contiguous()
         if (self.T == 0 or self.mem is None or self.mem.shape != x.shape
                 or self.mem.dtype != x.dtype or self.mem.device != x.device):
             self._initialize(x)
@@ -81,14 +89,17 @@ class TwoSide(nn.Module):
                 x, self.mem, self.cumulative_out,
                 self._positive_levels, self._negative_levels)
         else:
-            charged = self.mem + x
+            state_x = x.to(dtype=self.mem.dtype)
+            positive_base = self.positive_threshold.to(device=x.device, dtype=self.mem.dtype)
+            negative_base = self.negative_threshold.to(device=x.device, dtype=self.mem.dtype)
+            charged = self.mem + state_x
             positive = (charged.unsqueeze(0)
-                        >= (self._positive_levels - self.positive_threshold.to(x))
-                        .reshape((-1,) + (1,) * x.ndim) + self.positive_threshold.to(x) / 2).to(x.dtype)
+                        >= (self._positive_levels - positive_base)
+                        .reshape((-1,) + (1,) * x.ndim) + positive_base / 2).to(self.mem.dtype)
             negative = ((charged.unsqueeze(0)
-                         <= -(self._negative_levels - self.negative_threshold.to(x) / 2)
+                         <= -(self._negative_levels - negative_base / 2)
                          .reshape((-1,) + (1,) * x.ndim))
-                        ).to(x.dtype)
+                        ).to(self.mem.dtype)
             selected_positive = positive.clone()
             selected_negative = negative.clone()
             if self.num_thresholds > 1:
@@ -102,12 +113,14 @@ class TwoSide(nn.Module):
             self.mem = charged - spike
             self.cumulative_out = self.cumulative_out + spike
         self.T += 1
-        return spike
+        return spike.to(dtype=x.dtype)
 
     def _can_fuse(self, x):
         return (self.fused and _fused_step is not None and x.is_cuda
                 and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
                 and x.numel() > 0 and 1 <= self.num_thresholds <= 8
+                and self.mem.dtype == x.dtype
+                and self.cumulative_out.dtype == x.dtype
                 and x.is_contiguous() and self.mem.is_contiguous()
                 and self.cumulative_out.is_contiguous())
 

@@ -27,6 +27,7 @@ class ExpectationCompensation(nn.Module):
         self.function = function if isinstance(function, nn.Module) else _Callable(function)
         self._total: Optional[torch.Tensor] = None
         self.steps = 0
+        self._input_dtype = None
 
     @property
     def t(self):
@@ -35,14 +36,27 @@ class ExpectationCompensation(nn.Module):
     def reset_state(self):
         self._total = None
         self.steps = 0
+        self._input_dtype = None
 
     def _compatible(self, value):
+        state_dtype = torch.float32 if value.dtype in (torch.float16, torch.bfloat16) else value.dtype
         return (
             self._total is not None
             and self._total.shape == value.shape
             and self._total.device == value.device
-            and self._total.dtype == value.dtype
+            and self._total.dtype == state_dtype
+            and self._input_dtype == value.dtype
         )
+
+    @staticmethod
+    def _state_dtype(value):
+        return torch.float32 if value.dtype in (torch.float16, torch.bfloat16) else value.dtype
+
+    def _apply_function(self, value, output_dtype):
+        # Keep the nonlinear evaluation and the large-times subtraction in
+        # FP32.  Calling a half-precision LayerNorm with a float32 state is
+        # safe after converting the wrapped operation to FP32 at construction.
+        return self.function(value).to(output_dtype)
 
     def forward(self, value: torch.Tensor):
         if not isinstance(value, torch.Tensor):
@@ -50,19 +64,22 @@ class ExpectationCompensation(nn.Module):
         if not self._compatible(value):
             self.reset_state()
         if self.steps == 0:
-            self._total = value.detach().clone()
+            state_dtype = self._state_dtype(value)
+            if isinstance(self.function, nn.Module):
+                self.function.float()
+            self._total = value.detach().to(dtype=state_dtype).clone()
+            self._input_dtype = value.dtype
             self.steps = 1
-            return self.function(value)
+            return self._apply_function(value.to(dtype=state_dtype), value.dtype)
 
         previous_steps = self.steps
         previous_mean = self._total / previous_steps
         self._total = self._total + value.detach()
         self.steps += 1
         current_mean = self._total / self.steps
-        return (
-            self.function(current_mean) * self.steps
-            - self.function(previous_mean) * previous_steps
-        )
+        current = self.function(current_mean)
+        previous = self.function(previous_mean)
+        return (current * self.steps - previous * previous_steps).to(value.dtype)
 
 
 class MatrixProductCompensation(nn.Module):
@@ -78,6 +95,8 @@ class MatrixProductCompensation(nn.Module):
         self._right: Optional[torch.Tensor] = None
         self._product: Optional[torch.Tensor] = None
         self.steps = 0
+        self._left_input_dtype = None
+        self._right_input_dtype = None
 
     @property
     def t(self):
@@ -88,8 +107,11 @@ class MatrixProductCompensation(nn.Module):
         self._right = None
         self._product = None
         self.steps = 0
+        self._left_input_dtype = None
+        self._right_input_dtype = None
 
     def _compatible(self, left, right):
+        state_dtype = torch.float32 if left.dtype in (torch.float16, torch.bfloat16) else left.dtype
         return (
             self._left is not None
             and self._right is not None
@@ -97,8 +119,10 @@ class MatrixProductCompensation(nn.Module):
             and self._right.shape == right.shape
             and self._left.device == left.device
             and self._right.device == right.device
-            and self._left.dtype == left.dtype
-            and self._right.dtype == right.dtype
+            and self._left.dtype == state_dtype
+            and self._right.dtype == state_dtype
+            and self._left_input_dtype == left.dtype
+            and self._right_input_dtype == right.dtype
         )
 
     def forward(self, left: torch.Tensor, right: torch.Tensor):
@@ -106,33 +130,38 @@ class MatrixProductCompensation(nn.Module):
             raise TypeError("MatrixProductCompensation expects tensor operands")
         if not self._compatible(left, right):
             self.reset_state()
+        state_dtype = torch.float32 if left.dtype in (torch.float16, torch.bfloat16) else left.dtype
+        left_state = left.to(dtype=state_dtype)
+        right_state = right.to(dtype=state_dtype)
         if self.steps == 0:
-            self._left = left.detach().clone()
-            self._right = right.detach().clone()
-            self._product = self.operator(left, right).detach().clone()
+            self._left = left_state.detach().clone()
+            self._right = right_state.detach().clone()
+            self._product = self.operator(left_state, right_state).detach().clone()
+            self._left_input_dtype = left.dtype
+            self._right_input_dtype = right.dtype
             self.steps = 1
-            return self.operator(left, right)
+            return self.operator(left_state, right_state).to(left.dtype)
 
         old_left = self._left
         old_right = self._right
         old_product = self._product
         old_steps = self.steps
-        current_product = self.operator(left, right)
+        current_product = self.operator(left_state, right_state)
         increment = (
             current_product
-            + self.operator(left, old_right)
-            + self.operator(old_left, right)
+            + self.operator(left_state, old_right)
+            + self.operator(old_left, right_state)
         )
-        self._left = old_left + left.detach()
-        self._right = old_right + right.detach()
+        self._left = old_left + left_state.detach()
+        self._right = old_right + right_state.detach()
         self._product = old_product + increment.detach()
         self.steps += 1
         return (
-            (self.operator(left, self._right)
-             + self.operator(self._left, right)
+            (self.operator(left_state, self._right)
+             + self.operator(self._left, right_state)
              - current_product) / old_steps
             - self._product / (self.steps * old_steps)
-        )
+        ).to(left.dtype)
 
 
 ExpectationCompensated = ExpectationCompensation
