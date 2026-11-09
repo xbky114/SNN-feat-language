@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 import importlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -61,6 +61,42 @@ def _images(batch):
     if isinstance(batch, (tuple, list)) and batch:
         return batch[0]
     raise TypeError("calibration batches must be tensors, (images, labels), or mappings with image")
+
+
+def _input_spec(model, fallback_device):
+    """Return the device and dtype expected at a model's tensor input.
+
+    OpenAI CLIP keeps some transformer parameters in fp32 while converting
+    convolution/linear weights to fp16.  Looking at an arbitrary first
+    parameter therefore is not sufficient to prepare image batches: the
+    dtype must match the first operator that consumes the image.  ViT models
+    expose that operator as ``conv1``; other models fall back to their first
+    floating point parameter.
+    """
+    input_module = getattr(model, "conv1", None)
+    input_weight = getattr(input_module, "weight", None)
+    if isinstance(input_weight, torch.Tensor):
+        return input_weight.device, input_weight.dtype
+
+    for parameter in model.parameters():
+        if parameter.is_floating_point():
+            return parameter.device, parameter.dtype
+    for buffer in model.buffers():
+        if buffer.is_floating_point():
+            return buffer.device, buffer.dtype
+    return fallback_device, None
+
+
+def _cast_input_to_visual_dtype(module, args, kwargs):
+    """Adapt an ECMT ViT's public input to its patch-convolution dtype."""
+    if not args or not isinstance(args[0], torch.Tensor):
+        return args, kwargs
+    input_weight = getattr(getattr(module, "conv1", None), "weight", None)
+    value = args[0]
+    if isinstance(input_weight, torch.Tensor) and value.is_floating_point():
+        value = value.to(device=input_weight.device, dtype=input_weight.dtype)
+        args = (value, *args[1:])
+    return args, kwargs
 
 
 def _state_class(*names):
@@ -185,27 +221,38 @@ class _Reservoir:
         self.limit = limit
         self.values = torch.empty(0, dtype=torch.float32)
         self.count = 0
+        self._sample_count = 0
 
     def add(self, x):
-        x = x.detach().float().reshape(-1).cpu()
-        if not x.numel():
+        values = x.detach().reshape(-1)
+        total = values.numel()
+        if not total:
             return
-        previous = self.count
-        self.count += x.numel()
-        filled = min(self.limit - self.values.numel(), x.numel())
+        self.count += total
+        # A ViT-L/14 seam can contain tens of millions of values per batch.
+        # Select a bounded, evenly spread candidate set on-device before the
+        # CPU transfer; moving the full activation made calibration dominated
+        # by synchronization and host-side sampling.
+        if total > self.limit:
+            indices = torch.arange(self.limit, device=values.device, dtype=torch.long)
+            indices = indices * (total - 1) // (self.limit - 1)
+            values = values.index_select(0, indices)
+        values = values.float().cpu()
+        previous = self._sample_count
+        self._sample_count += values.numel()
+        filled = min(self.limit - self.values.numel(), values.numel())
         if filled:
-            self.values = torch.cat((self.values, x[:filled]))
-            x = x[filled:]
-        if not x.numel():
+            self.values = torch.cat((self.values, values[:filled]))
+            values = values[filled:]
+        if not values.numel():
             return
         # Deterministic reservoir sampling keeps calibration memory bounded.
         # Every item in the stream has the same chance of occupying a slot.
-        start = previous + filled
-        positions = torch.arange(start, self.count, dtype=torch.int64)
+        positions = torch.arange(previous + filled, self._sample_count, dtype=torch.int64)
         slots = torch.remainder(positions * 1103515245 + 12345, positions + 1)
         keep = slots < self.limit
         if keep.any():
-            self.values[slots[keep]] = x[keep]
+            self.values[slots[keep]] = values[keep]
 
     def quantile(self, q):
         if not self.values.numel():
@@ -216,37 +263,49 @@ class _Reservoir:
 def _calibrate(model, plan, loader, device, percent):
     if loader is None:
         raise ValueError("calibration_loader is required for ECMT")
-    if isinstance(loader, Iterator):
-        raise ValueError("ECMT calibration requires a reiterable loader, not a one-shot iterator")
-    model_state = next(iter(model.parameters()), None)
-    model_state = model_state if model_state is not None else next(
-        iter(model.buffers()), torch.empty(0, device=device)
-    )
-    model_device = model_state.device
-    model_dtype = model_state.dtype if model_state.is_floating_point() else None
+    model_device, model_dtype = _input_spec(model, device)
     neuron_targets = [
         target for target in plan.targets
         if str(target.kind).lower() in _NEURON_KINDS
         and str(target.kind).lower() != "softmax_neuron"
     ]
+    print(
+        f"[ECMT] calibrating {len(neuron_targets)} neuron seams "
+        f"(percent={percent:g})",
+        flush=True,
+    )
     stats = {t.path: _Reservoir() for t in neuron_targets}
-    def run_pass(collect):
+    finite = {
+        target.path: torch.ones((), dtype=torch.bool, device=model_device)
+        for target in neuron_targets
+    }
+    try:
+        total_batches = len(loader)
+    except TypeError:
+        total_batches = None
+
+    def run_pass():
         hooks = []
-        counts = {target.path: 0 for target in neuron_targets}
         for target in neuron_targets:
             def capture(_module, _inputs, output, name=target.path):
                 if not isinstance(output, torch.Tensor):
                     raise TypeError(f"ECMT calibration target {name!r} must return a tensor")
-                if output.numel() == 0 or not torch.isfinite(output).all():
+                if output.numel() == 0:
                     raise ValueError(f"non-finite or empty calibration activation at {name!r}")
-                counts[name] += output.numel()
-                if collect:
-                    stats[name].add(output)
+                finite[name] = finite[name] & torch.isfinite(output).all()
+                stats[name].add(output)
             hooks.append(model.get_submodule(target.path).register_forward_hook(capture))
         samples = 0
+        batches = 0
         try:
             with torch.no_grad():
-                for batch in loader:
+                for batches, batch in enumerate(loader, 1):
+                    if batches == 1:
+                        total = total_batches if total_batches is not None else "?"
+                        print(
+                            f"[ECMT] calibration batch {batches}/{total} started",
+                            flush=True,
+                        )
                     images = _images(batch)
                     if not isinstance(images, torch.Tensor):
                         raise TypeError("calibration image must be a torch.Tensor")
@@ -260,17 +319,27 @@ def _calibrate(model, plan, loader, device, percent):
                         model_input = images.to(device=model_device, dtype=model_dtype)
                     model(model_input)
                     samples += int(images.shape[0])
+                    if batches % 10 == 0 or batches == total_batches:
+                        total = total_batches if total_batches is not None else "?"
+                        print(
+                            f"[ECMT] calibration batch {batches}/{total} complete "
+                            f"(samples={samples})",
+                            flush=True,
+                        )
         finally:
             for hook in hooks:
                 hook.remove()
-        return samples, counts
+        return samples, batches
 
-    samples, counts = run_pass(collect=True)
+    samples, batches = run_pass()
     if samples == 0:
         raise ValueError("calibration loader is empty")
-    second_samples, second_counts = run_pass(collect=False)
-    if samples != second_samples or counts != second_counts:
-        raise ValueError("calibration loader changed between passes")
+    print(
+        f"[ECMT] calibration complete (batches={batches}, samples={samples})",
+        flush=True,
+    )
+    if not torch.stack(tuple(finite.values())).all().item():
+        raise ValueError("non-finite calibration activation")
     result = {}
     for target in neuron_targets:
         stat = stats[target.path]
@@ -322,6 +391,7 @@ def convert(visual, plan, params, calibration_loader=None, **_kwargs):
         raise TypeError("params must be ECMTConversionParams")
     params.__post_init__()
     _validate_plan(visual, plan)
+    print(f"[ECMT] conversion started (targets={len(plan.targets)})", flush=True)
     # Obtain device from the ANN before making any modifications.
     state = next(iter(visual.parameters()), None)
     state = state if state is not None else next(iter(visual.buffers()), torch.empty(0))
@@ -341,6 +411,14 @@ def convert(visual, plan, params, calibration_loader=None, **_kwargs):
     info = {"params": {k: getattr(params, k) for k in params.__dataclass_fields__},
             "thresholds": thresholds,
             "targets": [{"path": t.path, "kind": t.kind} for t in plan.targets]}
+    # SNNArtifact intentionally keeps its generic parameter-based boundary
+    # adaptation for every model family.  OpenAI ViT has fp32 embeddings
+    # registered before its fp16 input convolution, so attach this
+    # model-specific adaptation to the ECMT artifact instead of changing the
+    # shared artifact protocol.
+    if isinstance(getattr(model, "conv1", None), nn.Conv2d):
+        model.register_forward_pre_hook(_cast_input_to_visual_dtype, with_kwargs=True)
     artifact = SNNArtifact(model, params, plan).eval()
     artifact.reset_state()
+    print(f"[ECMT] conversion finished (targets={len(plan.targets)})", flush=True)
     return artifact, info

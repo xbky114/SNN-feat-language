@@ -12,7 +12,7 @@ The implementation must therefore fit ECMT into the project's ANN-to-SNN protoco
 
 ## Solution
 
-Add an ECMT conversion method for the OpenAI CLIP ViT-L/14 visual tower. The method will construct an ECMT-ready copy of the visual tower, calibrate scalar positive and negative thresholds from a caller-supplied reiterable image loader, replace the planned transformer operations with stateful ECMT modules, and return an artifact that can be saved and loaded without the ANN or calibration data.
+Add an ECMT conversion method for the OpenAI CLIP ViT-L/14 visual tower. The method will construct an ECMT-ready copy of the visual tower, calibrate scalar positive and negative thresholds from a caller-supplied image iterable, replace the planned transformer operations with stateful ECMT modules, and return an artifact that can be saved and loaded without the ANN or calibration data.
 
 The visual tower remains the only converted component. The CLIP text tower remains ANN code owned by the caller. Patch projection, token and positional additions, residual additions, the final class-token selection, final `ln_post`, and the final projection remain ordinary tensor operations. Transformer LayerNorm, QuickGELU, Softmax, attention matrix products, and the ECMT neuron insertion points follow the source method's temporal formulas.
 
@@ -25,7 +25,7 @@ The artifact exposes a tensor-in/tensor-out single-step interface. A caller repe
 3. As a conversion caller, I want to pass a calibration loader explicitly, so that calibration uses my selected dataset and preprocessing.
 4. As a conversion caller, I want loaders yielding image tensors, image/label tuples, or image dictionaries to work, so that the existing repository dataloader can be used without an adapter-specific wrapper.
 5. As a conversion caller, I want calibration to use the loader's image tensors exactly as supplied, so that calibration and evaluation see identical normalized inputs.
-6. As a conversion caller, I want invalid, one-shot, empty, inconsistent, or non-finite calibration input to fail with a clear error, so that a checkpoint is never produced from an invalid calibration run.
+6. As a conversion caller, I want invalid, empty, or non-finite calibration input to fail with a clear error, so that a checkpoint is never produced from an invalid calibration run.
 7. As a conversion caller, I want calibration to avoid retaining all ViT-L/14 activations, so that memory use remains bounded by model state and streaming statistics.
 8. As a conversion caller, I want each neuron target to have a scalar positive and scalar negative threshold, so that the default matches the ECMT source method and does not multiply the checkpoint by channel or token dimensions.
 9. As a conversion caller, I want positive and negative thresholds to be computed from configurable empirical tails, so that the threshold rule can be reproduced and tuned without changing conversion code.
@@ -121,12 +121,12 @@ The parameter object is serializable through the existing YAML loader and is sto
 
 ### Calibration
 
-- `calibration_loader` is required. It must be reiterable because calibration may require multiple passes over the same samples.
+- `calibration_loader` is required and is consumed once as an image iterable.
 - A batch may be a tensor, a tuple/list whose first tensor is the image batch, or a mapping with an `image` tensor. Other forms fail clearly.
 - Calibration runs in evaluation and no-grad mode on a copied ANN visual model. It does not mutate the caller's model.
 - Target activations are processed as a bounded streaming statistic. No complete activation cache is retained.
 - For each ordinary neuron target, calibration determines one scalar positive scale as the empirical `percent` quantile and one scalar negative scale as the negated empirical `(1 - percent)` quantile over all batch, token, head, and feature elements observed at that target. The selected scales must be finite and strictly positive for an active target; an inactive target is represented by a zero-output replacement.
-- Calibration rejects empty targets, non-finite values, inconsistent sample counts across passes, and missing plan targets.
+- Calibration rejects empty targets, non-finite values, and missing plan targets.
 - The calibration input is the ANN input at the corresponding neuron seam. Expectation-compensation modules and matrix-product modules do not receive threshold parameters.
 - Calibration uses the caller's already-preprocessed tensors. The conversion method does not download data, infer labels, or apply a second transform.
 - Conversion information records the selected thresholds, target categories, sample/element counts, and parameter values in JSON-safe forms.
@@ -143,7 +143,7 @@ The parameter object is serializable through the existing YAML loader and is sto
 
 ### Errors and unsupported cases
 
-- Fail before mutation for an invalid parameter object, unsupported target kind, incomplete plan, duplicate path, missing calibration loader, one-shot loader, empty data, non-finite calibration value, or incompatible visual structure.
+- Fail before mutation for an invalid parameter object, unsupported target kind, incomplete plan, duplicate path, missing calibration loader, empty data, non-finite calibration value, or incompatible visual structure.
 - Do not silently convert a partially recognized transformer or silently skip an unsupported operation.
 - Triton absence or an unsupported kernel input is a normal runtime fallback, not a conversion error. Kernel failures unrelated to unsupported inputs must remain visible rather than being swallowed.
 
@@ -163,7 +163,7 @@ Tests verify externally observable behavior at the highest practical seam. They 
 - Matrix-product compensation tests cover changing left and right operands, the first-step direct product, later correction steps, reset, and numerical stability.
 - Neuron tests cover positive spikes, negative retraction, multiple geometric levels, threshold boundary behavior, scalar broadcasting, state progression, reset, and changed input shape/dtype/device.
 - CUDA tests compare eager and Triton neuron trajectories across FP16, BF16, and FP32, multiple level counts, positive and negative inputs, boundary-adjacent values, and reset. They are skipped when CUDA or Triton is unavailable.
-- Calibration tests use small deterministic loaders in tensor, tuple, and mapping forms. They verify scalar thresholds, streaming behavior, repeated-loader requirements, non-finite rejection, missing-target rejection, and JSON-safe conversion information.
+- Calibration tests use small loaders in tensor, tuple, mapping, and one-shot iterable forms. They verify scalar thresholds, streaming behavior, non-finite rejection, missing-target rejection, and JSON-safe conversion information.
 - Conversion tests use a tiny transformer to verify that the returned object is an `SNNArtifact`, that the original ANN is unchanged, that one call advances state, and that reset makes a second run reproducible.
 - The first timestep is tested for tensor shape, finiteness, and state initialization only. Timestep-one closeness to the ANN is not an acceptance criterion or a required report because ECMT's signed multi-threshold quantization makes that comparison uninformative.
 - Checkpoint tests save and load a converted artifact and compare reset trajectories and final features within the documented dtype tolerance.
