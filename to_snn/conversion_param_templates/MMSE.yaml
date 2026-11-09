@@ -1,7 +1,7 @@
 # All six parameters are required; coding names come from to_snn/coding.py.
 time_steps: 32
-search_start: 0.5
+search_start: 0.5 # search from [search_start * M, M]. M is max of pre-activation.
 search_num: 50
 neuron: MTH
-num_thresholds: 4
+num_thresholds: 4 # n postive thresholds + n negative thresholds
 coding: rate_coding

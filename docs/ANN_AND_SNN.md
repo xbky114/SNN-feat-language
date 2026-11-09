@@ -128,10 +128,10 @@ the caller when semantic CLIP image/text evaluation is needed.
 
 `RateCoding` uses `previous + (spike - previous) / t`;
 `DifferentialCoding` uses `previous + spike / t`. Both return the first spike
-at `t=1`, promoted to FP32 for FP16/BF16 inputs. Streaming state remains FP32
-for those inputs; FP64 inputs retain FP64. Full-history `accumulate` retains
-its existing reduction behavior. Different reduction orders and precision
-mean streaming and full-history results need not be bitwise identical.
+at `t=1` with the spike's dtype. Streaming state preserves the input dtype,
+including FP16 and BF16. Full-history `accumulate` retains its existing
+reduction behavior. Different reduction orders and precision mean streaming
+and full-history results need not be bitwise identical.
 
 The existing names `rate_coding` and `differential_coding` are stateless
 instances, and calling them directly still delegates to `accumulate`.

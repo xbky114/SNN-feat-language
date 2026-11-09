@@ -13,8 +13,8 @@ class CODING(ABC):
     ``update(None, spike, 1)`` starts a sequence. Subsequent calls receive the
     previous returned tensor and the next one-based timestep. Implementations
     must not mutate their inputs or retain sequence state on the encoder.
-    The returned coded value has the spike's shape and device; its dtype may
-    be promoted for numerical stability. Cast only at the consumer boundary.
+    The returned coded value has the spike's shape, device, and dtype. Coding
+    keeps the input precision throughout its streaming recurrence.
     """
 
     @abstractmethod
@@ -71,7 +71,7 @@ def _as_time_tensor(
 
 
 def _update_spike(previous: torch.Tensor | None, spike: torch.Tensor, t: int):
-    """Validate the sequence boundary and promote low-precision arithmetic."""
+    """Validate the sequence boundary while preserving the spike dtype."""
     if isinstance(t, bool) or not isinstance(t, int) or t < 1:
         raise ValueError("t must be a positive integer starting at 1")
     if (previous is None) != (t == 1):
@@ -79,8 +79,6 @@ def _update_spike(previous: torch.Tensor | None, spike: torch.Tensor, t: int):
     if previous is not None:
         if previous.shape != spike.shape or previous.device != spike.device:
             raise ValueError("previous and spike must have the same shape and device")
-    if spike.dtype in (torch.float16, torch.bfloat16):
-        return spike.float()
     return spike
 
 

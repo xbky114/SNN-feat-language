@@ -169,17 +169,113 @@ class QuickGELU(nn.Module):
         return x * torch.sigmoid(1.702 * x)
 
 
-class ResidualAttentionBlock(nn.Module):
-    def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
+class ECMTIdentity(nn.Module):
+    """Explicit input seam used by the ECMT conversion plan."""
+    def __init__(self, place=None):
         super().__init__()
+        self.place = place
 
-        self.attn = nn.MultiheadAttention(d_model, n_head)
+    def forward(self, x):
+        return x
+
+
+class ECMTMatmul(nn.Module):
+    """Explicit two-input matrix-product seam for ECMT."""
+    def forward(self, left, right):
+        return left @ right
+
+
+class ECMTAttention(nn.MultiheadAttention):
+    """OpenAI MHA with visible QK/AV and neuron insertion seams.
+
+    Parameter names remain those of ``nn.MultiheadAttention`` so OpenAI CLIP
+    checkpoints load unchanged; only the forward path is made conversion-ready.
+    """
+    def __init__(self, embed_dim, num_heads, **kwargs):
+        super().__init__(embed_dim, num_heads, **kwargs)
+        self.qkv_neuron = ECMTIdentity("qkv")
+        self.q_neuron = ECMTIdentity("q")
+        self.k_neuron = ECMTIdentity("k")
+        self.v_neuron = ECMTIdentity("v")
+        self.qk = ECMTMatmul()
+        self.softmax = nn.Softmax(dim=-1)
+        self.softmax_neuron = ECMTIdentity("softmax")
+        self.av = ECMTMatmul()
+        self.x_out_neuron = ECMTIdentity("output")
+
+    def forward(self, query, key, value, key_padding_mask=None, need_weights=True,
+                attn_mask=None, average_attn_weights=True, is_causal=False):
+        # CLIP's visual and text towers use self-attention with a shared width.
+        # Keep a clear fallback for unusual cross-attention calls.
+        if (query.ndim != 3 or key.ndim != 3 or value.ndim != 3
+                or not (query.shape[-1] == self.embed_dim and key.shape[-1] == self.embed_dim
+                        and value.shape[-1] == self.embed_dim)):
+            return super().forward(query, key, value, key_padding_mask=key_padding_mask,
+                                   need_weights=need_weights, attn_mask=attn_mask,
+                                   average_attn_weights=average_attn_weights, is_causal=is_causal)
+        L, B, E = query.shape
+        S = key.shape[0]
+        same_self = query is key and key is value
+        query = self.qkv_neuron(query)
+        if not same_self:
+            key = self.qkv_neuron(key)
+            value = self.qkv_neuron(value)
+        if self._qkv_same_embed_dim and same_self:
+            qkv = F.linear(query, self.in_proj_weight, self.in_proj_bias)
+            q, k, v = qkv.chunk(3, dim=-1)
+        else:
+            if self._qkv_same_embed_dim:
+                wq, wk, wv = self.in_proj_weight.chunk(3, dim=0)
+                bq, bk, bv = self.in_proj_bias.chunk(3) if self.in_proj_bias is not None else (None, None, None)
+            else:
+                wq, wk, wv = self.q_proj_weight, self.k_proj_weight, self.v_proj_weight
+                bq = bk = bv = None
+            q, k, v = F.linear(query, wq, bq), F.linear(key, wk, bk), F.linear(value, wv, bv)
+        head_dim = E // self.num_heads
+        q = self.q_neuron(q).contiguous().view(L, B, self.num_heads, head_dim).permute(1, 2, 0, 3)
+        k = self.k_neuron(k).contiguous().view(S, B, self.num_heads, head_dim).permute(1, 2, 0, 3)
+        v = self.v_neuron(v).contiguous().view(S, B, self.num_heads, head_dim).permute(1, 2, 0, 3)
+        scores = self.qk(q, k.transpose(-2, -1)) * (head_dim ** -0.5)
+        if attn_mask is not None:
+            mask = attn_mask.to(device=scores.device)
+            if mask.dim() == 2:
+                if mask.dtype == torch.bool:
+                    scores = scores.masked_fill(mask[None, None, :, :], float("-inf"))
+                else:
+                    scores = scores + mask.to(dtype=scores.dtype)[None, None, :, :]
+            else:
+                mask = mask.view(B, self.num_heads, L, S)
+                if mask.dtype == torch.bool:
+                    scores = scores.masked_fill(mask, float("-inf"))
+                else:
+                    scores = scores + mask.to(dtype=scores.dtype)
+        if key_padding_mask is not None:
+            scores = scores.masked_fill(key_padding_mask[:, None, None, :].to(torch.bool), float("-inf"))
+        weights = self.softmax_neuron(self.softmax(scores))
+        weights = F.dropout(weights, p=self.dropout, training=self.training)
+        out = self.av(weights, v).permute(2, 0, 1, 3).contiguous().view(L, B, E)
+        out = self.x_out_neuron(out)
+        out = F.linear(out, self.out_proj.weight, self.out_proj.bias)
+        if not need_weights:
+            return out, None
+        presented = weights.mean(dim=1) if average_attn_weights else weights
+        return out, presented
+
+
+class ResidualAttentionBlock(nn.Module):
+    def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None, ecmt: bool = False):
+        super().__init__()
+        self.attn = ECMTAttention(d_model, n_head) if ecmt else nn.MultiheadAttention(d_model, n_head)
         self.ln_1 = LayerNorm(d_model)
-        self.mlp = nn.Sequential(OrderedDict([
-            ("c_fc", nn.Linear(d_model, d_model * 4)),
-            ("gelu", QuickGELU()),
-            ("c_proj", nn.Linear(d_model * 4, d_model))
-        ]))
+        if ecmt:
+            self.mlp = nn.Sequential(OrderedDict([
+                ("c_fc_neuron", ECMTIdentity("fc1")), ("c_fc", nn.Linear(d_model, d_model * 4)),
+                ("gelu", QuickGELU()), ("c_proj_neuron", ECMTIdentity("fc2")),
+                ("c_proj", nn.Linear(d_model * 4, d_model))]))
+        else:
+            self.mlp = nn.Sequential(OrderedDict([
+                ("c_fc", nn.Linear(d_model, d_model * 4)), ("gelu", QuickGELU()),
+                ("c_proj", nn.Linear(d_model * 4, d_model))]))
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
 
@@ -194,11 +290,11 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None, ecmt: bool = False):
         super().__init__()
         self.width = width
         self.layers = layers
-        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
+        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask, ecmt=ecmt) for _ in range(layers)])
 
     def forward(self, x: torch.Tensor):
         return self.resblocks(x)
@@ -216,7 +312,7 @@ class VisionTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        self.transformer = Transformer(width, layers, heads)
+        self.transformer = Transformer(width, layers, heads, ecmt=True)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
