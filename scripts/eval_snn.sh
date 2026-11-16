@@ -1,0 +1,12 @@
+python eval_snn.py \
+    --dataset imnet \
+    --data ./data/imagenet/ \
+    --clip openai_vit_B_16 \
+    --snn ./weights/spikeclip_cub.pt \
+    --output-dir ./results/spikeclip_cub_imnet \
+    --device cuda:2 \
+    --batch-size 256 \
+    --print-interval 1 \
+    --coding rate_coding \
+    --T 128 \
+    --images-per-file 256
