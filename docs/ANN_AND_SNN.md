@@ -149,3 +149,70 @@ mth_neuron = MTH(threshold=1.0, num_thresholds=4)
 
 Both classes expose single-step `forward(x)` and `reset_state()`. Conversion
 and MMSE threshold search use these same classes.
+
+## SpikeCLIP finetuned Spikingformer visual
+
+The `openai_vit_B_16` backend supplies untouched OpenAI CLIP ViT-B/16 ANN
+text weights. Convert the supported SpikeCLIP visual checkpoint once:
+
+```bash
+conda activate llava
+pip install spikingjelly==0.0.0.0.14
+mkdir -p weights
+python -m utils.convert_spikeclip \
+  /data/home/bky/SpikeCLIP/output/cub/finetune/20261116-140105/model_best.pth.tar \
+  weights/spikeclip_cub.pt
+```
+
+The converter strictly checks the complete visual state dictionary. It supports
+this rate-coded Spikingformer configuration: width 384, eight attention heads,
+four blocks, MLP ratio four, and 512-dimensional projected output. It records
+training T=8 and the neuron parameters in the artifact; users need not specify
+neuron settings. Normal loading requires this repository and SpikingJelly,
+without the training project's source directory. Only load trusted artifacts.
+
+Each visual call advances one timestep and returns projected continuous features.
+`rate_coding` averages those features. State persists past T=8, and
+`CLIPWithSNNVisual.encode_image` resets it at each batch boundary. The visual
+adapter resizes CLIP-normalized inputs to 32×32 using bilinear interpolation
+with `align_corners=False`. The ordinary CLIP preprocessing remains unchanged.
+
+For a CUB evaluation, explicitly select the dataset and data path:
+
+```bash
+python eval_snn.py --dataset cub --data ./data/cub \
+  --clip openai_vit_B_16 --snn weights/spikeclip_cub.pt \
+  --coding rate_coding --T 16 --batch-size 16 --workers 0 \
+  --device cuda:3 --output-dir results/spikeclip_cub
+```
+
+`scripts/eval_snn.sh` changes the model configuration while retaining its existing
+ImageNet dataset selection. Change its dataset arguments explicitly when using
+CUB. Extended timesteps are supported; improved accuracy is not guaranteed.
+
+### Independent real-data acceptance
+
+The verifier imports the actual training `Vision_Encoder` only for its reference
+side. Both sides use FP32 with TF32 disabled, identical inputs and prompts, and
+the same untouched OpenAI text tower. It compares fixed T=8 against the loaded
+artifact through the existing wrapper. The cosine tolerance is fixed in advance
+at `atol=1e-4, rtol=1e-4`: this allows FP32 temporal reduction-order differences
+while placing a direct bound on normalized similarity. Scaled-logit errors are
+also reported. Failure returns a nonzero exit status.
+
+```bash
+python tests/verify_spikeclip.py \
+  --reference-root /data/home/bky/SpikeCLIP \
+  --checkpoint /data/home/bky/SpikeCLIP/output/cub/finetune/20261116-140105/model_best.pth.tar \
+  --artifact weights/spikeclip_cub.pt --data ./data/cub \
+  --device cuda:3 --samples 16 --output results/spikeclip_verification.json
+```
+
+The JSON records deterministic sample indices spread across CUB, prompts,
+checkpoint/artifact hashes, maximum and mean cosine/logit errors, finite/shape
+checks, T=1/8/16 prefix consistency, repeated-batch reset and intervening-batch
+isolation, plus a smoke run of the unmodified `eval_snn.evaluate`. The smoke
+subset retains all hierarchy metadata. Dataset preparation follows
+[DATASETS.md](DATASETS.md); verification additionally requires the training
+project's reference dependencies. `--metadata-dir` can select an existing
+`FreeGrainLearning/data` directory when running in an isolated worktree.

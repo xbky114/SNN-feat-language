@@ -10,3 +10,6 @@
 [submodule "Transformer-to-SNN-ECMT"]
 	path = Transformer-to-SNN-ECMT
 	url = https://github.com/h-z-h-cell/Transformer-to-SNN-ECMT.git
+[submodule "SpikeCLIP"]
+	path = SpikeCLIP
+	url = https://github.com/xbky114/SpikeCLIP.git
