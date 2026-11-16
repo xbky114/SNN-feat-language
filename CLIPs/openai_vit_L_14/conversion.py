@@ -10,6 +10,7 @@ class OpenAIViTL14Adapter(CLIPAdapter):
     """Adapter exposing the OpenAI CLIP ViT-L/14 visual tower."""
 
     to_be_converted = "visual"
+    backend_name = "openai_vit_L_14"
 
     def __init__(self, model, preprocessing):
         super().__init__()
@@ -34,7 +35,7 @@ class OpenAIViTL14Adapter(CLIPAdapter):
         return None
 
     def conversion_plan(self):
-        return make_conversion_plan(self.visual)
+        return make_conversion_plan(self.visual, backend=self.backend_name)
 
     def encode_image(self, image):
         return self._model.encode_image(image)
@@ -70,7 +71,7 @@ def _add(targets, root, path, kind):
     targets.append(ConversionTarget(path, kind))
 
 
-def make_conversion_plan(model):
+def make_conversion_plan(model, *, backend="openai_vit_L_14"):
     """Enumerate every ECMT seam in the visual transformer."""
     root = model.visual if hasattr(model, "visual") else model
     if not hasattr(root, "transformer") or not hasattr(root.transformer, "resblocks"):
@@ -102,7 +103,7 @@ def make_conversion_plan(model):
     metadata = {
         "tower": "visual",
         "text_tower": "ann",
-        "backend": "openai_vit_L_14",
+        "backend": backend,
         "required_kinds": required,
         "expected_paths": tuple(target.path for target in targets),
         "attention": "explicit_qk_av",
